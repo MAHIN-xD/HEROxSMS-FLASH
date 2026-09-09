@@ -3,6 +3,7 @@ import logging
 import html
 from aiohttp import web
 from aiogram import Router, F
+from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
@@ -29,6 +30,9 @@ MAX_PRICE   = 0.135
 
 MENU_BUTTONS = ["Buy Telegram Number", "Bulk Buy Numbers", "Active Numbers", "Balance", "Profile"]
 
+def format_otp_text(phone: str, code: str) -> str:
+    return f"Number: +{phone}\nOTP: {code} | <b>MAH!N</b>"
+
 async def handle_herosms_webhook(request):
     action = request.query.get("action")
     aid = request.query.get("activationId") or request.query.get("id")
@@ -42,11 +46,11 @@ async def handle_herosms_webhook(request):
         if row:
             user_id = row[0]
             phone = row[1]
-            text = f"Number: +{phone}\nOTP: {code}"
+            text = format_otp_text(phone, code)
             bot = get_bot_instance()
             if bot:
                 try:
-                    await bot.send_message(user_id, text, reply_markup=kb.otp_copy_menu(code))
+                    await bot.send_message(user_id, text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
                     user = await db.get_user(user_id)
                     client = HeroSMSClient(user["api_key"])
                     await client.set_status(aid, 6)
@@ -65,9 +69,9 @@ async def is_allowed(user_id: int) -> bool:
     return True
 
 async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: HeroSMSClient):
-    # প্রতি ৫ সেকেন্ড পর পর ২৪০ বার ট্রাই করবে = ২০ মিনিট
-    for _ in range(240):
-        await asyncio.sleep(5)
+    # ৩ সেকেন্ড পর পর ৪০০ বার ট্রাই করবে = ২০ মিনিট
+    for _ in range(400):
+        await asyncio.sleep(3)
         row = await db.get_activation_user(activation_id)
         if not row:
             return 
@@ -77,8 +81,8 @@ async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: He
             if isinstance(res, str):
                 if res.startswith("STATUS_OK:"):
                     code = res.split(":", 1)[1]
-                    text = f"Number: +{phone}\nOTP: {code}"
-                    await bot.send_message(chat_id, text, reply_markup=kb.otp_copy_menu(code))
+                    text = format_otp_text(phone, code)
+                    await bot.send_message(chat_id, text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
                     await client.set_status(activation_id, 6)
                     await db.delete_activation(activation_id)
                     return
@@ -267,11 +271,15 @@ async def cb_check_sms(callback: CallbackQuery):
     aid = callback.data[len("check_"):]
     user = await db.get_user(callback.from_user.id)
     client = HeroSMSClient(user["api_key"])
+    row = await db.get_activation_user(aid)
+    phone = row[1] if row else "Unknown"
+
     res = await client.get_status(aid)
     if isinstance(res, str):
         if res.startswith("STATUS_OK:"):
             code = res.split(":", 1)[1]
-            await callback.message.edit_text(f"OTP Received!\n\nOTP: {code}", reply_markup=kb.otp_copy_menu(code))
+            text = format_otp_text(phone, code)
+            await callback.message.edit_text(text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
             await client.set_status(aid, 6)
             await db.delete_activation(aid)
         elif res.startswith("STATUS_WAIT_CODE"):
@@ -322,14 +330,16 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             await db.save_activation(aid, message.from_user.id, phone)
             asyncio.create_task(poll_sms(message.bot, message.chat.id, aid, phone, client))
             
-            try:
-                lines = "\n".join(f"{n}. +{p}" for n, p in enumerate(purchased, 1))
-                upd_text = f"Buying {amount} numbers... ({len(purchased)}/{amount})\n\n{lines}"
-                if len(upd_text) > 4000: upd_text = upd_text[:3990] + "..."
-                await status_msg.edit_text(upd_text)
-            except:
-                pass
-            await asyncio.sleep(0.3)
+            # দ্রুত মেসেজ আপডেট এর জন্য (প্রতি ৩টি পারচেজে বা শেষে আপডেট হবে)
+            if i % 3 == 0 or i == amount - 1:
+                try:
+                    lines = "\n".join(f"{n}. +{p}" for n, p in enumerate(purchased, 1))
+                    upd_text = f"Buying {amount} numbers... ({len(purchased)}/{amount})\n\n{lines}"
+                    if len(upd_text) > 4000: upd_text = upd_text[:3990] + "..."
+                    await status_msg.edit_text(upd_text)
+                except:
+                    pass
+            await asyncio.sleep(0.05)  # সর্বনিম্ন ডিলে দিয়ে দ্রুততম কেনা নিশ্চিত করে
         else:
             err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
             await message.answer(f"Stopped at #{i+1}: {html.escape(err)}")
@@ -366,10 +376,29 @@ async def text_active_numbers(message: Message):
         await status_msg.edit_text("No active numbers.")
         return
 
+    total = len(activations)
     await status_msg.edit_text(
-        f"Active Numbers ({len(activations)}):",
-        reply_markup=kb.active_numbers_menu(activations)
+        f"Active Numbers ({total}) - Page 1/{(total+9)//10}:",
+        reply_markup=kb.active_numbers_menu(activations, page=0)
     )
+
+@router.callback_query(F.data.startswith("act_page_"))
+async def cb_active_page(callback: CallbackQuery):
+    page = int(callback.data.split("_")[2])
+    user = await db.get_user(callback.from_user.id)
+    client = HeroSMSClient(user["api_key"])
+    res = await client.get_active_activations()
+
+    if isinstance(res, dict) and res.get("status") == "success":
+        activations = res.get("data", [])
+        total = len(activations)
+        if not activations:
+            await callback.message.edit_text("No active numbers left.")
+            return
+        await callback.message.edit_text(
+            f"Active Numbers ({total}) - Page {page+1}/{(total+9)//10}:",
+            reply_markup=kb.active_numbers_menu(activations, page=page)
+        )
 
 @router.callback_query(F.data == "cancel_all_active")
 async def cb_cancel_all_active(callback: CallbackQuery):
@@ -407,7 +436,10 @@ async def cb_cancel_all_active(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("active_cancel_"))
 async def cb_active_cancel(callback: CallbackQuery):
-    aid = callback.data[len("active_cancel_"):]
+    parts = callback.data.split("_")
+    aid = parts[2]
+    page = int(parts[3]) if len(parts) > 3 else 0
+
     user = await db.get_user(callback.from_user.id)
     client = HeroSMSClient(user["api_key"])
     r = await client.set_status(aid, 8)
@@ -420,7 +452,13 @@ async def cb_active_cancel(callback: CallbackQuery):
             if not acts:
                 await callback.message.edit_text("No active numbers left.")
             else:
-                await callback.message.edit_reply_markup(reply_markup=kb.active_numbers_menu(acts))
+                total = len(acts)
+                max_page = (total - 1) // 10
+                current_page = min(page, max_page)
+                await callback.message.edit_text(
+                    f"Active Numbers ({total}) - Page {current_page+1}/{(total+9)//10}:",
+                    reply_markup=kb.active_numbers_menu(acts, page=current_page)
+                )
     elif isinstance(r, str) and "EARLY_CANCEL_DENIED" in r:
         await callback.answer("Cannot cancel within first 2 minutes.", show_alert=True)
     else:
