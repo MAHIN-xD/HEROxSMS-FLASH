@@ -37,24 +37,42 @@ def number_action_menu(activation_id: str) -> InlineKeyboardMarkup:
     b.adjust(1)
     return b.as_markup()
 
-def active_numbers_menu(activations: list) -> InlineKeyboardMarkup:
+def active_numbers_menu(activations: list, page: int = 0, per_page: int = 10) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    for act in activations:
+    start_idx = page * per_page
+    end_idx = start_idx + per_page
+    current_page_items = activations[start_idx:end_idx]
+
+    # ১০ টি নম্বর প্রদর্শন
+    for act in current_page_items:
         aid = str(act.get("activationId", ""))
         phone = str(act.get("phoneNumber", "Unknown"))
         if aid:
-            b.button(text=f"Cancel +{phone}", callback_data=f"active_cancel_{aid}")
-    
-    b.button(text="Cancel All", callback_data="cancel_all_active")
-    b.button(text="Back", callback_data="menu_main")
+            b.button(text=f"Cancel +{phone}", callback_data=f"active_cancel_{aid}_{page}")
+
     b.adjust(1)
+
+    # পেজিনেশন (Next / Prev) বাটনসমূহ
+    nav_buttons = []
+    total_pages = (len(activations) + per_page - 1) // per_page
+    
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ Prev", callback_data=f"act_page_{page-1}"))
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"act_page_{page+1}"))
+    
+    if nav_buttons:
+        b.row(*nav_buttons)
+
+    b.row(InlineKeyboardButton(text="Cancel All", callback_data="cancel_all_active"))
+    b.row(InlineKeyboardButton(text="Back", callback_data="menu_main"))
     return b.as_markup()
 
 def otp_copy_menu(otp_code: str) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     try:
         from aiogram.types import CopyTextButton
-        b.row(InlineKeyboardButton(text="Copy Code", copy_text=CopyTextButton(text=otp_code)))
+        b.row(InlineKeyboardButton(text="• Copy •", copy_text=CopyTextButton(text=otp_code)))
     except ImportError:
         b.button(text="Copy Code", callback_data="noop")
     return b.as_markup()
