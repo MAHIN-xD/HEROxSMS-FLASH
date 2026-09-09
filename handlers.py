@@ -65,8 +65,9 @@ async def is_allowed(user_id: int) -> bool:
     return True
 
 async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: HeroSMSClient):
-    for _ in range(200):
-        await asyncio.sleep(3)
+    # প্রতি ৫ সেকেন্ড পর পর ২৪০ বার ট্রাই করবে = ২০ মিনিট
+    for _ in range(240):
+        await asyncio.sleep(5)
         row = await db.get_activation_user(activation_id)
         if not row:
             return 
@@ -84,8 +85,8 @@ async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: He
                 elif res.startswith("STATUS_CANCEL"):
                     await db.delete_activation(activation_id)
                     return
-        except Exception:
-            pass
+        except Exception as e:
+            logging.error(f"Polling error for {activation_id}: {e}")
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -339,47 +340,12 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         final = f"Bulk Order Done!\n\nPurchased {len(purchased)} numbers:\n\n{lines}"
         if len(final) > 4000:
             for part in [final[i:i+4000] for i in range(0, len(final), 4000)]:
-                await message.answer(part, reply_markup=kb.bulk_action_menu())
+                await message.answer(part)
             await status_msg.delete()
         else:
-            await status_msg.edit_text(final, reply_markup=kb.bulk_action_menu())
+            await status_msg.edit_text(final)
     else:
         await status_msg.edit_text("Could not purchase any numbers.")
-
-@router.callback_query(F.data == "bulk_refresh_status")
-async def cb_bulk_refresh(callback: CallbackQuery):
-    user = await db.get_user(callback.from_user.id)
-    if not user or not user["api_key"]: return
-    client = HeroSMSClient(user["api_key"])
-    
-    res = await client.get_active_activations()
-    if not (isinstance(res, dict) and res.get("status") == "success"):
-        await callback.answer("Failed to fetch status.", show_alert=True)
-        return
-
-    activations = res.get("data", [])
-    found_otps = 0
-
-    for act in activations:
-        aid = str(act.get("activationId", ""))
-        phone = str(act.get("phoneNumber", ""))
-        if aid:
-            status = await client.get_status(aid)
-            if isinstance(status, str) and status.startswith("STATUS_OK:"):
-                code = status.split(":", 1)[1]
-                found_otps += 1
-                await callback.bot.send_message(
-                    callback.from_user.id,
-                    f"Number: +{phone}\nOTP: {code}",
-                    reply_markup=kb.otp_copy_menu(code)
-                )
-                await client.set_status(aid, 6)
-                await db.delete_activation(aid)
-
-    if found_otps > 0:
-        await callback.answer(f"Found {found_otps} new OTP(s)!", show_alert=True)
-    else:
-        await callback.answer("No new OTPs found yet.", show_alert=True)
 
 @router.message(F.text == "Active Numbers")
 async def text_active_numbers(message: Message):
