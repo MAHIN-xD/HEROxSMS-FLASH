@@ -94,12 +94,13 @@ async def process_api_key(message: Message, state: FSMContext):
     else:
         await message.answer("Invalid API Key. Please check and send again.")
 
-# --- Number Order Handler ---
-@router.message(F.text == "Buy Telegram Number")
+# --- Reply Keyboard Button Handlers ---
+
+@router.message(F.text.in_(["Buy Telegram Number", "Buy Number"]))
 async def buy_colombia_number(message: Message):
     user = await db.get_user(message.from_user.id)
     if not user or not user["api_key"]:
-        await message.answer("Please set your API key first.")
+        await message.answer("Please set your API key first using /start.")
         return
 
     client = HeroSMSClient(user["api_key"])
@@ -116,3 +117,42 @@ async def buy_colombia_number(message: Message):
     else:
         error_msg = res.get("message", "NO_NUMBERS") if isinstance(res, dict) else str(res)
         await message.answer(f"Failed to get number. Error: {error_msg}")
+
+@router.message(F.text == "Balance")
+async def check_balance(message: Message):
+    user = await db.get_user(message.from_user.id)
+    if not user or not user["api_key"]:
+        await message.answer("Please set your API key first using /start.")
+        return
+
+    client = HeroSMSClient(user["api_key"])
+    balance = await client.get_balance()
+    if balance is not None:
+        await message.answer(f"Balance: {balance:.4f} USD")
+    else:
+        await message.answer("Error checking balance. Check your API Key.")
+
+@router.message(F.text == "Profile")
+async def show_profile(message: Message):
+    user = await db.get_user(message.from_user.id)
+    if not user:
+        await message.answer("User profile not found.")
+        return
+    
+    api_status = "Set" if user["api_key"] else "Not Set"
+    await message.answer(f"User ID: {message.from_user.id}\nAPI Key Status: {api_status}")
+
+# --- Callback Handlers (Cancel Activation) ---
+
+@router.callback_query(F.data.startswith("cancel_"))
+async def cancel_activation_callback(query: CallbackQuery):
+    act_id = query.data.split("_")[1]
+    user = await db.get_user(query.from_user.id)
+    
+    if user and user["api_key"]:
+        client = HeroSMSClient(user["api_key"])
+        await client.set_status(act_id, 8) # Status 8 = Cancel
+        await db.delete_activation(act_id)
+        await query.message.edit_text(f"Activation {act_id} cancelled successfully.")
+    else:
+        await query.answer("Failed to cancel activation.", show_alert=True)
