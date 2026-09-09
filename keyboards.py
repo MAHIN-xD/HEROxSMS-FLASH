@@ -32,16 +32,8 @@ def confirm_number_menu(country_id, service_code) -> InlineKeyboardMarkup:
 
 def number_action_menu(activation_id: str) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="Refresh SMS", callback_data=f"check_{activation_id}")
+    b.button(text="Check SMS", callback_data=f"check_{activation_id}")
     b.button(text="Cancel", callback_data=f"single_cancel_{activation_id}")
-    b.adjust(1)
-    return b.as_markup()
-
-def bulk_action_menu() -> InlineKeyboardMarkup:
-    b = InlineKeyboardBuilder()
-    b.button(text="Refresh SMS Status", callback_data="bulk_refresh_status")
-    b.button(text="Cancel All Active", callback_data="cancel_all_active")
-    b.button(text="Main Menu", callback_data="menu_main")
     b.adjust(1)
     return b.as_markup()
 
@@ -53,7 +45,6 @@ def active_numbers_menu(activations: list) -> InlineKeyboardMarkup:
         if aid:
             b.button(text=f"Cancel +{phone}", callback_data=f"active_cancel_{aid}")
     
-    b.button(text="Refresh SMS Status", callback_data="bulk_refresh_status")
     b.button(text="Cancel All", callback_data="cancel_all_active")
     b.button(text="Back", callback_data="menu_main")
     b.adjust(1)
