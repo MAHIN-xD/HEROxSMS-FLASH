@@ -12,7 +12,7 @@ from handlers import router, handle_herosms_webhook, get_bot_instance, set_bot_i
 
 TOKEN = os.getenv("BOT_TOKEN", "8668990603:AAGDYvRuVWNqZtSwBFZMf7XQaRXsppi-EdM")
 PORT  = int(os.getenv("PORT", 8080))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "") # e.g. https://your-app.onrender.com
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 
 async def on_startup(bot: Bot):
     await db.init_db()
@@ -27,7 +27,8 @@ async def handle_ping(request):
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="Markdown"))
+    # Changed parse_mode to HTML to prevent markdown parsing errors with API keys
+    bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     set_bot_instance(bot)
     
     dp = Dispatcher()
@@ -36,15 +37,11 @@ def main():
 
     app = web.Application()
     
-    # Health check
     app.router.add_get("/", handle_ping)
-    
-    # HeroSMS Webhook
     app.router.add_get("/herosms_webhook", handle_herosms_webhook)
     app.router.add_post("/herosms_webhook", handle_herosms_webhook)
 
     if WEBHOOK_URL:
-        # Telegram Webhook
         SimpleRequestHandler(
             dispatcher=dp,
             bot=bot,
@@ -54,7 +51,6 @@ def main():
         logging.info(f"Starting web server on port {PORT} with webhook")
         web.run_app(app, host="0.0.0.0", port=PORT)
     else:
-        # Polling
         async def start_polling_and_server():
             runner = web.AppRunner(app)
             await runner.setup()
