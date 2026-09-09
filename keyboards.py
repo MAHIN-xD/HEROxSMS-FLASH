@@ -1,4 +1,4 @@
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 def main_reply_menu() -> ReplyKeyboardMarkup:
@@ -8,8 +8,7 @@ def main_reply_menu() -> ReplyKeyboardMarkup:
     b.button(text="Active Numbers")
     b.button(text="Balance")
     b.button(text="Profile")
-    b.button(text="Support")
-    b.adjust(2, 2, 2)
+    b.adjust(2, 2, 1)
     return b.as_markup(resize_keyboard=True)
 
 def profile_menu() -> InlineKeyboardMarkup:
@@ -33,8 +32,16 @@ def confirm_number_menu(country_id, service_code) -> InlineKeyboardMarkup:
 
 def number_action_menu(activation_id: str) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    b.button(text="Check SMS", callback_data=f"check_{activation_id}")
+    b.button(text="Refresh SMS", callback_data=f"check_{activation_id}")
     b.button(text="Cancel", callback_data=f"single_cancel_{activation_id}")
+    b.adjust(1)
+    return b.as_markup()
+
+def bulk_action_menu() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="Refresh SMS Status", callback_data="bulk_refresh_status")
+    b.button(text="Cancel All Active", callback_data="cancel_all_active")
+    b.button(text="Main Menu", callback_data="menu_main")
     b.adjust(1)
     return b.as_markup()
 
@@ -44,9 +51,10 @@ def active_numbers_menu(activations: list) -> InlineKeyboardMarkup:
         aid = str(act.get("activationId", ""))
         phone = str(act.get("phoneNumber", "Unknown"))
         if aid:
-            b.button(text=f"❌ Cancel +{phone}", callback_data=f"active_cancel_{aid}")
+            b.button(text=f"Cancel +{phone}", callback_data=f"active_cancel_{aid}")
     
-    b.button(text="Cancel All (Background)", callback_data="cancel_all_active")
+    b.button(text="Refresh SMS Status", callback_data="bulk_refresh_status")
+    b.button(text="Cancel All", callback_data="cancel_all_active")
     b.button(text="Back", callback_data="menu_main")
     b.adjust(1)
     return b.as_markup()
@@ -55,14 +63,9 @@ def otp_copy_menu(otp_code: str) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     try:
         from aiogram.types import CopyTextButton
-        b.row(InlineKeyboardButton(text="📋 Copy Code", copy_text=CopyTextButton(text=otp_code)))
+        b.row(InlineKeyboardButton(text="Copy Code", copy_text=CopyTextButton(text=otp_code)))
     except ImportError:
-        b.button(text="📋 Copy Code", callback_data="noop")
-    return b.as_markup()
-
-def cancel_all_menu() -> InlineKeyboardMarkup:
-    b = InlineKeyboardBuilder()
-    b.button(text="Cancel All (Background)", callback_data="cancel_all_active")
+        b.button(text="Copy Code", callback_data="noop")
     return b.as_markup()
 
 def admin_menu(maintenance: bool) -> InlineKeyboardMarkup:
