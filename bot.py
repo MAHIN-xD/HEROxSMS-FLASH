@@ -10,7 +10,7 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 import database as db
 from handlers import router, handle_herosms_webhook, get_bot_instance, set_bot_instance
 
-TOKEN = os.getenv("BOT_TOKEN", "8668990603:AAFGChnpTW6QkuQNEv-u2c06L3muVBslrHU")
+TOKEN = os.getenv("BOT_TOKEN", "8668990603:AAHLTHmpxULQHJXO85l_0btyaudxbvPnL7I")
 PORT  = int(os.getenv("PORT", 8080))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 
