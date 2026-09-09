@@ -46,7 +46,7 @@ async def handle_herosms_webhook(request):
                 try:
                     await bot.send_message(user_id, text, reply_markup=kb.otp_copy_menu(code))
                     user = await db.get_user(user_id)
-                    if user and user.get("api_key"):
+                    if user and user["api_key"]:
                         client = HeroSMSClient(user["api_key"])
                         await client.set_status(aid, 6)
                     await db.delete_activation(aid)
@@ -63,11 +63,12 @@ async def cmd_start(message: Message, state: FSMContext):
     await db.add_user(message.from_user.id)
     user = await db.get_user(message.from_user.id)
 
-    if user and user.get("is_banned"):
+    # sqlite3.Row-এ .get() এর বদলে সরাসরি কি অ্যাক্সেস করতে হবে
+    if user and user["is_banned"]:
         await message.answer("You are banned from using this bot.")
         return
 
-    if not user or not user.get("api_key"):
+    if not user or not user["api_key"]:
         await message.answer(
             "Welcome!\n\nPlease send your HeroSMS API Key to start.",
             reply_markup=ReplyKeyboardRemove()
@@ -79,7 +80,7 @@ async def cmd_start(message: Message, state: FSMContext):
 @router.message(F.text == "Buy Telegram Number")
 async def buy_colombia_number(message: Message):
     user = await db.get_user(message.from_user.id)
-    if not user or not user.get("api_key"):
+    if not user or not user["api_key"]:
         await message.answer("Please set your API key first.")
         return
 
