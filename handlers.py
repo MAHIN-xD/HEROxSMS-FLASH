@@ -27,7 +27,7 @@ COLOMBIA_ID = 33
 TG_SERVICE  = "tg"
 MAX_PRICE   = 0.135
 
-MENU_BUTTONS = ["Buy Telegram Number", "Bulk Buy Numbers", "Active Numbers", "Balance", "Profile", "Support"]
+MENU_BUTTONS = ["Buy Telegram Number", "Bulk Buy Numbers", "Active Numbers", "Balance", "Profile"]
 
 async def handle_herosms_webhook(request):
     action = request.query.get("action")
@@ -177,10 +177,6 @@ async def text_balance(message: Message):
     else:
         await message.answer("Error fetching balance.")
 
-@router.message(F.text == "Support")
-async def text_support(message: Message):
-    await message.answer("Support: @Syedmahinislam")
-
 @router.message(F.text == "Buy Telegram Number")
 async def text_buy_tg_number(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -213,7 +209,6 @@ async def cb_buy_number(callback: CallbackQuery):
 
     aid = str(res["activationId"])
     phone = res.get("phoneNumber", "Unknown")
-    cost = res.get("activationCost", "?")
 
     await db.save_activation(aid, callback.from_user.id, phone)
     text = f"Number Purchased!\n\nNumber: +{phone}\nID: {aid}\n\nWaiting for OTP..."
@@ -344,12 +339,47 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         final = f"Bulk Order Done!\n\nPurchased {len(purchased)} numbers:\n\n{lines}"
         if len(final) > 4000:
             for part in [final[i:i+4000] for i in range(0, len(final), 4000)]:
-                await message.answer(part)
+                await message.answer(part, reply_markup=kb.bulk_action_menu())
             await status_msg.delete()
         else:
-            await status_msg.edit_text(final)
+            await status_msg.edit_text(final, reply_markup=kb.bulk_action_menu())
     else:
         await status_msg.edit_text("Could not purchase any numbers.")
+
+@router.callback_query(F.data == "bulk_refresh_status")
+async def cb_bulk_refresh(callback: CallbackQuery):
+    user = await db.get_user(callback.from_user.id)
+    if not user or not user["api_key"]: return
+    client = HeroSMSClient(user["api_key"])
+    
+    res = await client.get_active_activations()
+    if not (isinstance(res, dict) and res.get("status") == "success"):
+        await callback.answer("Failed to fetch status.", show_alert=True)
+        return
+
+    activations = res.get("data", [])
+    found_otps = 0
+
+    for act in activations:
+        aid = str(act.get("activationId", ""))
+        phone = str(act.get("phoneNumber", ""))
+        if aid:
+            status = await client.get_status(aid)
+            if isinstance(status, str) and status.startswith("STATUS_OK:"):
+                code = status.split(":", 1)[1]
+                found_otps += 1
+                await callback.bot.send_message(
+                    callback.from_user.id,
+                    f"Number: +{phone}\nOTP: {code}",
+                    reply_markup=kb.otp_copy_menu(code)
+                )
+                await client.set_status(aid, 6)
+                await db.delete_activation(aid)
+
+    if found_otps > 0:
+        await callback.answer(f"Found {found_otps} new OTP(s)!", show_alert=True)
+    else:
+        await callback.answer("No new OTPs found yet.", show_alert=True)
 
 @router.message(F.text == "Active Numbers")
 async def text_active_numbers(message: Message):
