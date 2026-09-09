@@ -1,76 +1,105 @@
-import aiohttp
-import json
+import asyncio
 import logging
+from aiohttp import web
+from aiogram import Router, F
+from aiogram.filters import CommandStart
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
+from aiogram.fsm.context import FSMContext
 
-BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
+import database as db
+from api_client import HeroSMSClient
+import keyboards as kb
+from states import BotStates
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-}
+router = Router()
+global_bot = None
 
-class HeroSMSClient:
-    def __init__(self, api_key: str):
-        self.api_key = api_key.strip().strip("\"'").strip() if api_key else ""
+ADMIN_ID = 7266067201
+COLOMBIA_ID = 33
+TG_SERVICE = "tg"
+MAX_PRICE = 0.135
 
-    async def _get(self, action: str, **kwargs):
-        params = {"api_key": self.api_key, "action": action}
-        params.update(kwargs)
-        try:
-            async with aiohttp.ClientSession(headers=HEADERS) as session:
-                async with session.get(BASE_URL, params=params, timeout=15) as response:
-                    text = await response.text()
-                    try:
-                        return json.loads(text)
-                    except json.JSONDecodeError:
-                        return text
-        except Exception as e:
-            logging.error(f"API Error ({action}): {e}")
-            return None
+def set_bot_instance(bot):
+    global global_bot
+    global_bot = bot
 
-    async def get_balance(self):
-        res = await self._get("getBalance")
-        if isinstance(res, str):
-            res_clean = res.strip()
-            if res_clean.startswith("ACCESS_BALANCE:"):
+def get_bot_instance():
+    return global_bot
+
+# --- Webhook Handler (HeroSMS থেকে OTP গ্রহণের জন্য) ---
+async def handle_herosms_webhook(request):
+    aid = request.query.get("activationId") or request.query.get("id")
+    code = request.query.get("code")
+    action = request.query.get("action")
+
+    if not aid:
+        return web.Response(text="Missing activationId", status=400)
+
+    if action == "STATUS_OK" or code:
+        row = await db.get_activation_user(aid)
+        if row:
+            user_id, phone = row[0], row[1]
+            text = f"🇨🇴 <b>Colombia Telegram OTP</b>\n\n📱 <b>Number:</b> <code>+{phone}</code>\n💬 <b>OTP Code:</b> <code>{code}</code>"
+            
+            bot = get_bot_instance()
+            if bot:
                 try:
-                    return float(res_clean.split(":", 1)[1].strip())
-                except:
-                    return None
-            try:
-                return float(res_clean)
-            except:
-                pass
-        elif isinstance(res, dict):
-            if "balance" in res:
-                try:
-                    return float(res["balance"])
-                except:
-                    pass
-            if "data" in res and isinstance(res["data"], dict) and "balance" in res["data"]:
-                try:
-                    return float(res["data"]["balance"])
-                except:
-                    pass
-        return None
+                    await bot.send_message(user_id, text, reply_markup=kb.otp_copy_menu(code))
+                    user = await db.get_user(user_id)
+                    if user and user["api_key"]:
+                        client = HeroSMSClient(user["api_key"])
+                        await client.set_status(aid, 6) # অটোম্যাটিক কমপ্লিট স্ট্যাটাস পাঠানো
+                    await db.delete_activation(aid)
+                except Exception as e:
+                    logging.error(f"Error handling OTP for user {user_id}: {e}")
+        return web.Response(text="OK")
+    
+    return web.Response(text="Ignored")
 
-    async def get_prices(self, country: int = None, service: str = None):
-        params = {}
-        if country: params["country"] = country
-        if service: params["service"] = service
-        return await self._get("getPrices", **params)
+# --- Telegram Bot Command Handlers ---
+@router.message(CommandStart())
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
+    await db.add_user(message.from_user.id)
+    user = await db.get_user(message.from_user.id)
 
-    async def get_number(self, service: str, country: int, max_price: float = None):
-        params = {"service": service, "country": country}
-        if max_price: params["maxPrice"] = max_price
-        return await self._get("getNumberV2", **params)
+    if user and user.get("is_banned"):
+        await message.answer("❌ You are banned from using this bot.")
+        return
 
-    async def get_status(self, activation_id: str):
-        return await self._get("getStatus", id=activation_id)
+    if not user or not user.get("api_key"):
+        await message.answer(
+            "Welcome to Colombia Telegram SMS Bot! 🇨🇴\n\nPlease send your <b>HeroSMS API Key</b> to start.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await state.set_state(BotStates.waiting_for_api_key)
+    else:
+        await message.answer("Welcome back! 👋", reply_markup=kb.main_reply_menu())
 
-    async def set_status(self, activation_id: str, status: int):
-        return await self._get("setStatus", id=str(activation_id), status=status)
+@router.message(F.text == "Buy Colombia Telegram Number")
+async def buy_colombia_number(message: Message):
+    user = await db.get_user(message.from_user.id)
+    if not user or not user.get("api_key"):
+        await message.answer("❌ Please set your API key first.")
+        return
 
-    async def get_active_activations(self):
-        return await self._get("getActiveActivations")
+    client = HeroSMSClient(user["api_key"])
+    res = await client.buy_colombia_telegram_number(max_price=MAX_PRICE)
+
+    # HeroSMS API Response Verification
+    if isinstance(res, dict) and res.get("status") == "SUCCESS":
+        act_id = str(res.get("activationId"))
+        phone = str(res.get("phoneNumber"))
+        
+        await db.add_activation(act_id, message.from_user.id, phone, TG_SERVICE, COLOMBIA_ID)
+        
+        msg = (
+            f"✅ <b>Colombia Number Ordered!</b> 🇨🇴\n\n"
+            f"📱 <b>Number:</b> <code>+{phone}</code>\n"
+            f"🆔 <b>ID:</b> <code>{act_id}</code>\n\n"
+            f"Waiting for OTP via Webhook..."
+        )
+        await message.answer(msg, reply_markup=kb.cancel_activation_menu(act_id))
+    else:
+        error_msg = res.get("message", "NO_NUMBERS") if isinstance(res, dict) else str(res)
+        await message.answer(f"❌ Failed to get Colombia number. Error: <code>{error_msg}</code>")
