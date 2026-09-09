@@ -12,7 +12,8 @@ from handlers import router, handle_herosms_webhook, get_bot_instance, set_bot_i
 
 TOKEN = os.getenv("BOT_TOKEN", "8202597792:AAFO7lRfZXwBzQuvkiO4CBBegFiluI9dMz0")
 PORT  = int(os.getenv("PORT", 8080))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://heroxsms-flash.onrender.com/herosms_webhook")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
+
 
 async def on_startup(bot: Bot):
     await db.init_db()
