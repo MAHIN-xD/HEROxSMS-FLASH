@@ -38,14 +38,26 @@ def number_action_menu(activation_id: str) -> InlineKeyboardMarkup:
     b.adjust(1)
     return b.as_markup()
 
+def active_numbers_menu(activations: list) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    for act in activations:
+        aid = str(act.get("activationId", ""))
+        phone = str(act.get("phoneNumber", "Unknown"))
+        if aid:
+            b.button(text=f"❌ Cancel +{phone}", callback_data=f"active_cancel_{aid}")
+    
+    b.button(text="Cancel All (Background)", callback_data="cancel_all_active")
+    b.button(text="Back", callback_data="menu_main")
+    b.adjust(1)
+    return b.as_markup()
+
 def otp_copy_menu(otp_code: str) -> InlineKeyboardMarkup:
-    """Show OTP with a copy button."""
     b = InlineKeyboardBuilder()
     try:
         from aiogram.types import CopyTextButton
-        b.row(InlineKeyboardButton(text="Copy", copy_text=CopyTextButton(text=otp_code)))
+        b.row(InlineKeyboardButton(text="📋 Copy Code", copy_text=CopyTextButton(text=otp_code)))
     except ImportError:
-        b.button(text=f"Copy", callback_data="noop")
+        b.button(text="📋 Copy Code", callback_data="noop")
     return b.as_markup()
 
 def cancel_all_menu() -> InlineKeyboardMarkup:
