@@ -56,14 +56,13 @@ async def handle_herosms_webhook(request):
     
     return web.Response(text="Ignored")
 
-# --- Command Handlers ---
+# --- Command & Start Handlers ---
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     await db.add_user(message.from_user.id)
     user = await db.get_user(message.from_user.id)
 
-    # sqlite3.Row-এ .get() এর বদলে সরাসরি কি অ্যাক্সেস করতে হবে
     if user and user["is_banned"]:
         await message.answer("You are banned from using this bot.")
         return
@@ -77,6 +76,25 @@ async def cmd_start(message: Message, state: FSMContext):
     else:
         await message.answer("Welcome back!", reply_markup=kb.main_reply_menu())
 
+# --- Process API Key Input ---
+@router.message(BotStates.waiting_for_api_key)
+async def process_api_key(message: Message, state: FSMContext):
+    api_key = message.text.strip().strip("\"'").strip()
+    
+    client = HeroSMSClient(api_key)
+    balance = await client.get_balance()
+    
+    if balance is not None:
+        await db.update_api_key(message.from_user.id, api_key)
+        await state.clear()
+        await message.answer(
+            f"API Key saved successfully!\nBalance: {balance:.4f} USD",
+            reply_markup=kb.main_reply_menu()
+        )
+    else:
+        await message.answer("Invalid API Key. Please check and send again.")
+
+# --- Number Order Handler ---
 @router.message(F.text == "Buy Telegram Number")
 async def buy_colombia_number(message: Message):
     user = await db.get_user(message.from_user.id)
