@@ -5,8 +5,9 @@ import logging
 BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
 
 HEADERS = {
-    "User-Agent": "HeroSMSBot/2.0",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
 }
 
 class HeroSMSClient:
@@ -35,28 +36,41 @@ class HeroSMSClient:
             if res_clean.startswith("ACCESS_BALANCE:"):
                 try:
                     return float(res_clean.split(":", 1)[1].strip())
-                except ValueError:
+                except:
                     return None
             try:
                 return float(res_clean)
-            except ValueError:
+            except:
                 pass
-        elif isinstance(res, dict) and "balance" in res:
-            try:
-                return float(res["balance"])
-            except (ValueError, TypeError):
-                pass
+        elif isinstance(res, dict):
+            if "balance" in res:
+                try:
+                    return float(res["balance"])
+                except:
+                    pass
+            if "data" in res and isinstance(res["data"], dict) and "balance" in res["data"]:
+                try:
+                    return float(res["data"]["balance"])
+                except:
+                    pass
         return None
 
-    async def buy_colombia_telegram_number(self, max_price: float = 0.135):
-        """কোলম্বিয়ার Telegram নম্বরের জন্য সরাসরি API কল"""
-        params = {
-            "service": "tg",
-            "country": 33, # Colombia ID
-            "maxPrice": max_price
-        }
+    async def get_prices(self, country: int = None, service: str = None):
+        params = {}
+        if country: params["country"] = country
+        if service: params["service"] = service
+        return await self._get("getPrices", **params)
+
+    async def get_number(self, service: str, country: int, max_price: float = None):
+        params = {"service": service, "country": country}
+        if max_price: params["maxPrice"] = max_price
         return await self._get("getNumberV2", **params)
 
+    async def get_status(self, activation_id: str):
+        return await self._get("getStatus", id=activation_id)
+
     async def set_status(self, activation_id: str, status: int):
-        # status 6 = Complete, status 8 = Cancel
         return await self._get("setStatus", id=str(activation_id), status=status)
+
+    async def get_active_activations(self):
+        return await self._get("getActiveActivations")
