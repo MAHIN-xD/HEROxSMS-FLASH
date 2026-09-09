@@ -18,13 +18,14 @@ class HeroSMSClient:
         params = {"api_key": self.api_key, "action": action}
         params.update(kwargs)
         try:
-            async with aiohttp.ClientSession(headers=HEADERS) as session:
-                async with session.get(BASE_URL, params=params, timeout=15) as response:
+            timeout = aiohttp.ClientTimeout(total=15)
+            async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:
+                async with session.get(BASE_URL, params=params) as response:
                     text = await response.text()
                     try:
                         return json.loads(text)
                     except json.JSONDecodeError:
-                        return text
+                        return text.strip()
         except Exception as e:
             logging.error(f"API Error ({action}): {e}")
             return None
@@ -64,10 +65,31 @@ class HeroSMSClient:
     async def get_number(self, service: str, country: int, max_price: float = None):
         params = {"service": service, "country": country}
         if max_price: params["maxPrice"] = max_price
-        return await self._get("getNumberV2", **params)
+        res = await self._get("getNumberV2", **params)
+
+        # যদি API টেক্সট রেসপন্স পাঠায় (ACCESS_NUMBER:id:number)
+        if isinstance(res, str) and res.startswith("ACCESS_NUMBER"):
+            parts = res.split(":")
+            if len(parts) >= 3:
+                return {
+                    "status": "SUCCESS",
+                    "activationId": parts[1],
+                    "phoneNumber": parts[2]
+                }
+        
+        # যদি ডিকশনারি রেসপন্স পাঠায়
+        if isinstance(res, dict) and "activationId" in res:
+            res["status"] = "SUCCESS"
+            return res
+
+        return res
+
+    async def buy_colombia_telegram_number(self, max_price: float = 0.135):
+        """handlers.py এর সাথে সামঞ্জস্য রাখার জন্য শর্টকাট মেথড"""
+        return await self.get_number(service="tg", country=33, max_price=max_price)
 
     async def get_status(self, activation_id: str):
-        return await self._get("getStatus", id=activation_id)
+        return await self._get("getStatus", id=str(activation_id))
 
     async def set_status(self, activation_id: str, status: int):
         return await self._get("setStatus", id=str(activation_id), status=status)
