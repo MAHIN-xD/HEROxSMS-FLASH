@@ -55,7 +55,7 @@ CUSTOM_EMOJI_MAP = {
     "🛒": "6257812301399725616", "🚫": "6100388225149310843",
     "⚠️": "6098337704682984714", "🇨🇴": "5913773060074246009",
     "ℹ️": "6100619775426173201", "✈️": "5271801931814165886",
-    "🐙": "5417836094098007862", "☑️": "5427009714745511004" # Blue Premium Tick
+    "🐙": "5417836094098007862", "☑️": "5427009714745511004"
 }
 _CUSTOM_EMOJI_KEYS = sorted(CUSTOM_EMOJI_MAP.keys(), key=len, reverse=True)
 _TAG_SPLIT_RE = re.compile(r'(<[^>]+>)')
@@ -162,7 +162,6 @@ async def process_otp(aid: str, code: str, sms_text: str, phone: str):
         return
         
     user_id = row[0]
-    await db.delete_activation(aid)
     
     display_code = code if code else sms_text
     save_history(user_id, aid, phone, display_code)
@@ -175,7 +174,8 @@ async def process_otp(aid: str, code: str, sms_text: str, phone: str):
             await bot.send_message(user_id, text, reply_markup=kb.otp_copy_menu(display_code), parse_mode=ParseMode.HTML)
             user = await db.get_user(user_id)
             client = HeroSMSClient(user["api_key"])
-            await client.set_status(aid, 6)
+            # Status 3 to keep activation alive for 2nd/3rd OTPs (20 mins)
+            await client.set_status(aid, 3)
         except Exception as e:
             logging.error(f"Failed to process OTP: {e}")
 
@@ -224,13 +224,13 @@ async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: He
                 if res.startswith("STATUS_OK:"):
                     code = res.split(":", 1)[1]
                     await process_otp(activation_id, code, "", phone)
-                    return
                 elif res.startswith("STATUS_CANCEL"):
                     await db.delete_activation(activation_id)
                     return
         except Exception as e:
             pass
             
+    # Auto cleanup database after 20 minutes
     await db.delete_activation(activation_id)
 
 # ==================== LIVE BULK COUNTDOWN TASK ====================
@@ -416,7 +416,7 @@ async def cb_buy_number(callback: CallbackQuery):
     await db.save_activation(aid, callback.from_user.id, phone)
     text = pe(
         f"✅ <b>NUMBER PURCHASED!</b>\n\n"
-        f"📞 Number: <b><code>+{phone}</code></b>\n"
+        f"📞 Number: <b>+{phone}</b>\n"
         f"🆔 ID: <code>{aid}</code>\n\n"
         f"⏳ <b>Waiting for OTP...</b>"
     )
@@ -451,8 +451,10 @@ async def cmd_cancel_number(message: Message):
     elif isinstance(cancel_res, str) and "EARLY_CANCEL_DENIED" in cancel_res:
         await message.answer(pe("❌ Cannot cancel within first 2 minutes."), parse_mode=ParseMode.HTML)
     else:
-        err = cancel_res.get("title", str(cancel_res)) if isinstance(cancel_res, dict) else str(cancel_res)
-        await message.answer(pe(f"❌ <b>Failed to cancel</b> <code>{target}</code>: {html.escape(err)}"), parse_mode=ParseMode.HTML)
+        # Fallback finish and remove if cancel denied (e.g. OTP received)
+        await client.set_status(aid_to_cancel, 6)
+        await db.delete_activation(aid_to_cancel)
+        await message.answer(pe(f"✅ <b>Finished & Removed</b> <code>{target}</code>."), parse_mode=ParseMode.HTML)
 
 @router.callback_query(F.data.startswith("single_cancel_"))
 async def cb_cancel_single(callback: CallbackQuery):
@@ -460,14 +462,16 @@ async def cb_cancel_single(callback: CallbackQuery):
     user = await db.get_user(callback.from_user.id)
     client = HeroSMSClient(user["api_key"])
     res = await client.set_status(aid, 8)
-    if isinstance(res, str) and res.startswith("ACCESS_CANCEL"):
+    if isinstance(res, str) and (res.startswith("ACCESS_CANCEL") or res.startswith("STATUS_CANCEL")):
         await db.delete_activation(aid)
         await callback.message.edit_text(pe("✅ <b>Cancelled.</b> Balance refunded."), reply_markup=kb.back_button(), parse_mode=ParseMode.HTML)
     elif isinstance(res, str) and "EARLY_CANCEL_DENIED" in res:
         await callback.answer("Cannot cancel within first 2 minutes.", show_alert=True)
     else:
-        err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
-        await callback.answer(f"Error: {err}", show_alert=True)
+        # Fallback finish and remove
+        await client.set_status(aid, 6)
+        await db.delete_activation(aid)
+        await callback.message.edit_text(pe("✅ <b>Finished & Removed.</b>"), reply_markup=kb.back_button(), parse_mode=ParseMode.HTML)
 
 @router.callback_query(F.data.startswith("check_"))
 async def cb_check_sms(callback: CallbackQuery):
@@ -488,7 +492,7 @@ async def cb_check_sms(callback: CallbackQuery):
             code = res.split(":", 1)[1]
             await process_otp(aid, code, "", phone)
             await callback.answer("Success", show_alert=False)
-        elif res.startswith("STATUS_WAIT_CODE"):
+        elif res.startswith("STATUS_WAIT_CODE") or res.startswith("STATUS_WAIT_RETRY"):
             await callback.answer("Still waiting for SMS...", show_alert=True)
         elif res.startswith("STATUS_CANCEL"):
             await db.delete_activation(aid)
@@ -624,7 +628,7 @@ async def cb_cancel_all_active(callback: CallbackQuery):
         await callback.answer("No active numbers to cancel.", show_alert=True)
         return
 
-    await callback.message.edit_text(pe(f"⏳ <b>Cancelling {len(activations)} numbers... please wait.</b>"), parse_mode=ParseMode.HTML)
+    await callback.message.edit_text(pe(f"⏳ <b>Clearing {len(activations)} numbers... please wait.</b>"), parse_mode=ParseMode.HTML)
 
     async def cancel_one(act):
         aid = str(act.get("activationId", ""))
@@ -634,7 +638,10 @@ async def cb_cancel_all_active(callback: CallbackQuery):
             if isinstance(r, str) and (r.startswith("ACCESS_CANCEL") or r.startswith("STATUS_CANCEL")):
                 await db.delete_activation(aid)
                 return True
-            if isinstance(r, dict) and r.get("status") == "success":
+            elif isinstance(r, str) and "EARLY_CANCEL_DENIED" in r:
+                return False
+            else:
+                await client.set_status(aid, 6)
                 await db.delete_activation(aid)
                 return True
         except: pass
@@ -642,7 +649,7 @@ async def cb_cancel_all_active(callback: CallbackQuery):
 
     results = await asyncio.gather(*[cancel_one(a) for a in activations])
     ok = sum(1 for x in results if x)
-    await callback.message.edit_text(pe(f"✅ <b>Cancelled {ok}/{len(activations)} numbers.</b> Balance refunded."), parse_mode=ParseMode.HTML)
+    await callback.message.edit_text(pe(f"✅ <b>Cleared {ok}/{len(activations)} numbers.</b>"), parse_mode=ParseMode.HTML)
 
 @router.callback_query(F.data.startswith("active_cancel_"))
 async def cb_active_cancel(callback: CallbackQuery):
@@ -656,24 +663,28 @@ async def cb_active_cancel(callback: CallbackQuery):
     if isinstance(r, str) and (r.startswith("ACCESS_CANCEL") or r.startswith("STATUS_CANCEL")):
         await db.delete_activation(aid)
         await callback.answer("Cancelled!", show_alert=True)
-        res = await client.get_active_activations()
-        if isinstance(res, dict) and res.get("status") == "success":
-            acts = res.get("data", [])
-            if not acts:
-                await callback.message.edit_text(pe("📋 <b>No active numbers left.</b>"), parse_mode=ParseMode.HTML)
-            else:
-                total = len(acts)
-                max_page = (total - 1) // 10
-                current_page = min(page, max_page)
-                await callback.message.edit_text(
-                    pe(f"📋 <b>Active Numbers ({total}) - Page {current_page+1}/{(total+9)//10}:</b>"),
-                    reply_markup=kb.active_numbers_menu(acts, page=current_page),
-                    parse_mode=ParseMode.HTML
-                )
     elif isinstance(r, str) and "EARLY_CANCEL_DENIED" in r:
         await callback.answer("Cannot cancel within first 2 minutes.", show_alert=True)
+        return
     else:
-        await callback.answer("Failed to cancel.", show_alert=True)
+        await client.set_status(aid, 6)
+        await db.delete_activation(aid)
+        await callback.answer("Finished & Removed!", show_alert=True)
+
+    res = await client.get_active_activations()
+    if isinstance(res, dict) and res.get("status") == "success":
+        acts = res.get("data", [])
+        if not acts:
+            await callback.message.edit_text(pe("📋 <b>No active numbers left.</b>"), parse_mode=ParseMode.HTML)
+        else:
+            total = len(acts)
+            max_page = (total - 1) // 10
+            current_page = min(page, max_page)
+            await callback.message.edit_text(
+                pe(f"📋 <b>Active Numbers ({total}) - Page {current_page+1}/{(total+9)//10}:</b>"),
+                reply_markup=kb.active_numbers_menu(acts, page=current_page),
+                parse_mode=ParseMode.HTML
+            )
 
 @router.message(Command("admin"))
 async def cmd_admin(message: Message):
