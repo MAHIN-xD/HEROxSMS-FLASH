@@ -2,6 +2,9 @@ import asyncio
 import logging
 import html
 import re
+import json
+import os
+from datetime import datetime, timedelta
 from aiohttp import web
 from aiogram import Router, F
 from aiogram.enums import ParseMode
@@ -52,7 +55,7 @@ CUSTOM_EMOJI_MAP = {
     "🛒": "6257812301399725616", "🚫": "6100388225149310843",
     "⚠️": "6098337704682984714", "🇨🇴": "5913773060074246009",
     "ℹ️": "6100619775426173201", "✈️": "5271801931814165886",
-    "🐙": "5417836094098007862"
+    "🐙": "5417836094098007862", "☑️": "5427009714745511004" # Blue Premium Tick
 }
 _CUSTOM_EMOJI_KEYS = sorted(CUSTOM_EMOJI_MAP.keys(), key=len, reverse=True)
 _TAG_SPLIT_RE = re.compile(r'(<[^>]+>)')
@@ -90,20 +93,66 @@ def pe(text):
     return ''.join(out)
 # ==============================================================
 
-# MEMORY CACHE TO PREVENT DUPLICATE OTP PRINTING
+# ==================== HISTORY SYSTEM ==========================
+HISTORY_FILE = "user_history.json"
+
+def save_history(user_id, aid, phone, code):
+    history = {}
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                history = json.load(f)
+        except: pass
+    
+    uid_str = str(user_id)
+    if uid_str not in history:
+        history[uid_str] = []
+        
+    history[uid_str].append({
+        "aid": str(aid),
+        "phone": str(phone).replace('+', ''),
+        "code": str(code),
+        "time": datetime.now().isoformat()
+    })
+    
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history, f)
+
+def get_24h_history(user_id):
+    history = {}
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                history = json.load(f)
+        except: pass
+        
+    uid_str = str(user_id)
+    user_hist = history.get(uid_str, [])
+    
+    now = datetime.now()
+    recent = []
+    for item in user_hist:
+        try:
+            dt = datetime.fromisoformat(item["time"])
+            if now - dt <= timedelta(hours=24):
+                recent.append(item)
+        except: pass
+        
+    return recent
+# ==============================================================
+
 sent_otps = set()
 
 def format_otp_text(phone: str, code: str) -> str:
     clean_phone = phone.replace('+', '')
     return pe(
         f"🇨🇴 | <b>COLOMBIA</b> | TG ✈️\n\n"
-        f"📞 | Number : <b><code>+{clean_phone}</code></b>\n"
+        f"☑️ | Number : <b><code>+{clean_phone}</code></b>\n"
         f"🐙 | Code : <code>{code}</code>"
     )
 
 async def process_otp(aid: str, code: str, sms_text: str, phone: str):
     cache_key = f"{aid}:{code}"
-    # Ignore if this exact OTP was already sent
     if cache_key in sent_otps:
         return
     sent_otps.add(cache_key)
@@ -113,7 +162,11 @@ async def process_otp(aid: str, code: str, sms_text: str, phone: str):
         return
         
     user_id = row[0]
+    await db.delete_activation(aid)
+    
     display_code = code if code else sms_text
+    save_history(user_id, aid, phone, display_code)
+    
     text = format_otp_text(phone, display_code)
     bot = get_bot_instance()
     
@@ -122,8 +175,7 @@ async def process_otp(aid: str, code: str, sms_text: str, phone: str):
             await bot.send_message(user_id, text, reply_markup=kb.otp_copy_menu(display_code), parse_mode=ParseMode.HTML)
             user = await db.get_user(user_id)
             client = HeroSMSClient(user["api_key"])
-            # Status 3 (Request resending of SMS) - Keeps activation open for 2nd OTP
-            await client.set_status(aid, 3)
+            await client.set_status(aid, 6)
         except Exception as e:
             logging.error(f"Failed to process OTP: {e}")
 
@@ -172,13 +224,13 @@ async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: He
                 if res.startswith("STATUS_OK:"):
                     code = res.split(":", 1)[1]
                     await process_otp(activation_id, code, "", phone)
+                    return
                 elif res.startswith("STATUS_CANCEL"):
                     await db.delete_activation(activation_id)
                     return
         except Exception as e:
             pass
             
-    # Auto cleanup database after 20 minutes if not manually cancelled
     await db.delete_activation(activation_id)
 
 # ==================== LIVE BULK COUNTDOWN TASK ====================
@@ -269,6 +321,25 @@ async def cb_menu_main(callback: CallbackQuery, state: FSMContext):
     except: pass
     await callback.message.answer(pe("✅ <b>Welcome back!</b>"), reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
 
+@router.message(Command("history"))
+async def cmd_history(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    
+    recent = get_24h_history(message.from_user.id)
+    if not recent:
+        await message.answer(pe("📜 <b>History (Last 24h)</b>\n\n❌ No successful activations found."), parse_mode=ParseMode.HTML)
+        return
+        
+    lines = [pe(f"📜 <b>History (Last 24h) : {len(recent)} items</b>\n")]
+    for item in reversed(recent):
+        lines.append(f"📞 <b>+{item['phone']}</b>\n🔑 OTP: <code>{item['code']}</code>\n🆔 Order ID: <code>{item['aid']}</code>\n")
+        
+    msg = "\n".join(lines)
+    if len(msg) > 4000:
+        msg = msg[:3990] + "..."
+        
+    await message.answer(msg, parse_mode=ParseMode.HTML)
+
 @router.message(F.text == "Profile")
 async def text_profile(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -317,10 +388,10 @@ async def text_buy_tg_number(message: Message):
         return
     text = pe(
         f"🛒 <b>PURCHASE INFO</b>\n\n"
-        f"<blockquote>🌍 Country: <b>Colombia</b>\n"
-        f"📱 Service: <b>Telegram</b></blockquote>\n\n"
-        f"<blockquote>💸 Price: <code>{cost} USD</code>\n"
-        f"📶 Available: <code>{count} numbers</code></blockquote>\n\n"
+        f"🌍 Country: <b>Colombia</b>\n"
+        f"📱 Service: <b>Telegram</b>\n\n"
+        f"💸 Price: <code>{cost} USD</code>\n"
+        f"📶 Available: <code>{count} numbers</code>\n\n"
         f"⚡️ <b>Do you want to buy?</b>"
     )
     await message.answer(text, reply_markup=kb.confirm_number_menu(COLOMBIA_ID, TG_SERVICE), parse_mode=ParseMode.HTML)
@@ -345,8 +416,8 @@ async def cb_buy_number(callback: CallbackQuery):
     await db.save_activation(aid, callback.from_user.id, phone)
     text = pe(
         f"✅ <b>NUMBER PURCHASED!</b>\n\n"
-        f"<blockquote>📞 Number: <b><code>+{phone}</code></b>\n"
-        f"🆔 ID: <code>{aid}</code></blockquote>\n\n"
+        f"📞 Number: <b><code>+{phone}</code></b>\n"
+        f"🆔 ID: <code>{aid}</code>\n\n"
         f"⏳ <b>Waiting for OTP...</b>"
     )
     await callback.message.edit_text(text, reply_markup=kb.number_action_menu(aid), parse_mode=ParseMode.HTML)
@@ -469,7 +540,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
                 try:
                     lines = "\n".join(f"{n}. <b>+{p}</b>" for n, p in enumerate(purchased, 1))
                     percentage = int((len(purchased) / amount) * 100)
-                    upd_text = pe(f"⏳ <b>Buying {amount} numbers... ({len(purchased)}/{amount}) {percentage}%</b>\n\n<blockquote>{lines}</blockquote>")
+                    upd_text = pe(f"⏳ <b>Buying {amount} numbers... ({len(purchased)}/{amount}) {percentage}%</b>\n\n{lines}")
                     if len(upd_text) > 4000: upd_text = upd_text[:3990] + "..."
                     await status_msg.edit_text(upd_text, parse_mode=ParseMode.HTML)
                 except:
@@ -482,7 +553,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 
     if purchased:
         lines = "\n".join(f"{n}. <b>+{p}</b>" for n, p in enumerate(purchased, 1))
-        final = pe(f"✅ <b>Bulk Order Done! 100%</b>\n\nPurchased {len(purchased)} numbers:\n\n<blockquote>{lines}</blockquote>")
+        final = pe(f"✅ <b>Bulk Order Done! 100%</b>\n\nPurchased {len(purchased)} numbers:\n\n{lines}")
         
         if len(final) > 3800:
             for part in [final[i:i+3800] for i in range(0, len(final), 3800)]:
