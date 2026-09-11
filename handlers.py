@@ -52,7 +52,7 @@ CUSTOM_EMOJI_MAP = {
     "🛒": "6257812301399725616", "🚫": "6100388225149310843",
     "⚠️": "6098337704682984714", "🇨🇴": "5913773060074246009",
     "ℹ️": "6100619775426173201", "✈️": "5271801931814165886",
-    "🐙": "5417836094098007862" # GitHub Premium Logo
+    "🐙": "5417836094098007862"
 }
 _CUSTOM_EMOJI_KEYS = sorted(CUSTOM_EMOJI_MAP.keys(), key=len, reverse=True)
 _TAG_SPLIT_RE = re.compile(r'(<[^>]+>)')
@@ -90,6 +90,9 @@ def pe(text):
     return ''.join(out)
 # ==============================================================
 
+# MEMORY CACHE TO PREVENT DUPLICATE OTP PRINTING
+sent_otps = set()
+
 def format_otp_text(phone: str, code: str) -> str:
     clean_phone = phone.replace('+', '')
     return pe(
@@ -98,16 +101,18 @@ def format_otp_text(phone: str, code: str) -> str:
         f"🐙 | Code : <code>{code}</code>"
     )
 
-async def process_webhook_data(aid: str, code: str, sms_text: str):
+async def process_otp(aid: str, code: str, sms_text: str, phone: str):
+    cache_key = f"{aid}:{code}"
+    # Ignore if this exact OTP was already sent
+    if cache_key in sent_otps:
+        return
+    sent_otps.add(cache_key)
+    
     row = await db.get_activation_user(aid)
     if not row:
         return
         
-    await db.delete_activation(aid)
-    
     user_id = row[0]
-    phone = row[1]
-    
     display_code = code if code else sms_text
     text = format_otp_text(phone, display_code)
     bot = get_bot_instance()
@@ -117,9 +122,10 @@ async def process_webhook_data(aid: str, code: str, sms_text: str):
             await bot.send_message(user_id, text, reply_markup=kb.otp_copy_menu(display_code), parse_mode=ParseMode.HTML)
             user = await db.get_user(user_id)
             client = HeroSMSClient(user["api_key"])
-            await client.set_status(aid, 6)
+            # Status 3 (Request resending of SMS) - Keeps activation open for 2nd OTP
+            await client.set_status(aid, 3)
         except Exception as e:
-            logging.error(f"Failed to process webhook for {user_id}: {e}")
+            logging.error(f"Failed to process OTP: {e}")
 
 async def handle_herosms_webhook(request):
     if request.method != "POST":
@@ -138,7 +144,10 @@ async def handle_herosms_webhook(request):
         return web.Response(text="Missing activationId", status=400)
 
     if code or sms_text:
-        asyncio.create_task(process_webhook_data(aid, code, sms_text))
+        row = await db.get_activation_user(aid)
+        if row:
+            phone = row[1]
+            asyncio.create_task(process_otp(aid, code, sms_text, phone))
 
     return web.json_response({"status": "success"}, status=200)
 
@@ -161,18 +170,46 @@ async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: He
             res = await client.get_status(activation_id)
             if isinstance(res, str):
                 if res.startswith("STATUS_OK:"):
-                    await db.delete_activation(activation_id)
-                    
                     code = res.split(":", 1)[1]
-                    text = format_otp_text(phone, code)
-                    await bot.send_message(chat_id, text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
-                    await client.set_status(activation_id, 6)
-                    return
+                    await process_otp(activation_id, code, "", phone)
                 elif res.startswith("STATUS_CANCEL"):
                     await db.delete_activation(activation_id)
                     return
         except Exception as e:
-            logging.error(f"Polling error for {activation_id}: {e}")
+            pass
+            
+    # Auto cleanup database after 20 minutes if not manually cancelled
+    await db.delete_activation(activation_id)
+
+# ==================== LIVE BULK COUNTDOWN TASK ====================
+async def live_bulk_countdown(bot, chat_id, message_id, base_text):
+    for remaining in range(20 * 60, -1, -5):
+        mins, secs = divmod(remaining, 60)
+        clock_text = pe(f"⏳ <b>Auto Cancel In:</b> <code>{mins:02d}:{secs:02d}</code>")
+        full_text = f"{base_text}\n\n{clock_text}"
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=full_text,
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            if "Too Many Requests" in str(e):
+                await asyncio.sleep(10)
+            pass
+        await asyncio.sleep(5)
+        
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=f"{base_text}\n\n" + pe("❌ <b>Session Expired</b>"),
+            parse_mode=ParseMode.HTML
+        )
+    except:
+        pass
+# =================================================================
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -190,7 +227,7 @@ async def cmd_start(message: Message, state: FSMContext):
         return
 
     if not user or not user["api_key"]:
-        await message.answer(pe("💎 <b>WELCOME TO HEROSMS </b> 💎\n\n⚡️ Please send your API Key to get started..."), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.HTML)
+        await message.answer(pe("💎 <b>WELCOME TO HEROSMS PREMIUM</b> 💎\n\n⚡️ Please send your API Key to get started."), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.HTML)
         await state.set_state(BotStates.waiting_for_api_key)
     else:
         await message.answer(pe("✅ <b>Welcome back!</b>"), reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
@@ -377,11 +414,9 @@ async def cb_check_sms(callback: CallbackQuery):
     res = await client.get_status(aid)
     if isinstance(res, str):
         if res.startswith("STATUS_OK:"):
-            await db.delete_activation(aid)
             code = res.split(":", 1)[1]
-            text = format_otp_text(phone, code)
-            await callback.message.edit_text(text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
-            await client.set_status(aid, 6)
+            await process_otp(aid, code, "", phone)
+            await callback.answer("Success", show_alert=False)
         elif res.startswith("STATUS_WAIT_CODE"):
             await callback.answer("Still waiting for SMS...", show_alert=True)
         elif res.startswith("STATUS_CANCEL"):
@@ -397,7 +432,7 @@ async def text_bulk_buy(message: Message, state: FSMContext):
     if not await is_allowed(message.from_user.id): return
     user = await db.get_user(message.from_user.id)
     if not user or not user["api_key"]: return
-    await message.answer(pe("📦 <b>Bulk Purchase</b>\n\nHow many numbers do you want to buy? (1-100)"), parse_mode=ParseMode.HTML)
+    await message.answer(pe("📦 <b>Bulk Purchase</b>\n\nHow many numbers do you want to buy? (1-500)"), parse_mode=ParseMode.HTML)
     await state.set_state(BotStates.waiting_for_bulk_amount)
 
 @router.message(BotStates.waiting_for_bulk_amount)
@@ -432,7 +467,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             
             if i % 3 == 0 or i == amount - 1:
                 try:
-                    lines = "\n".join(f"{n}. <b><code>+{p}</code></b>" for n, p in enumerate(purchased, 1))
+                    lines = "\n".join(f"{n}. <b>+{p}</b>" for n, p in enumerate(purchased, 1))
                     percentage = int((len(purchased) / amount) * 100)
                     upd_text = pe(f"⏳ <b>Buying {amount} numbers... ({len(purchased)}/{amount}) {percentage}%</b>\n\n<blockquote>{lines}</blockquote>")
                     if len(upd_text) > 4000: upd_text = upd_text[:3990] + "..."
@@ -446,14 +481,16 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             break
 
     if purchased:
-        lines = "\n".join(f"{n}. <b><code>+{p}</code></b>" for n, p in enumerate(purchased, 1))
+        lines = "\n".join(f"{n}. <b>+{p}</b>" for n, p in enumerate(purchased, 1))
         final = pe(f"✅ <b>Bulk Order Done! 100%</b>\n\nPurchased {len(purchased)} numbers:\n\n<blockquote>{lines}</blockquote>")
-        if len(final) > 4000:
-            for part in [final[i:i+4000] for i in range(0, len(final), 4000)]:
+        
+        if len(final) > 3800:
+            for part in [final[i:i+3800] for i in range(0, len(final), 3800)]:
                 await message.answer(part, parse_mode=ParseMode.HTML)
             await status_msg.delete()
         else:
             await status_msg.edit_text(final, parse_mode=ParseMode.HTML)
+            asyncio.create_task(live_bulk_countdown(message.bot, message.chat.id, status_msg.message_id, final))
     else:
         await status_msg.edit_text(pe("❌ <b>Could not purchase any numbers.</b>"), parse_mode=ParseMode.HTML)
 
