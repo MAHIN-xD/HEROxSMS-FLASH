@@ -31,7 +31,7 @@ MAX_PRICE   = 0.135
 
 MENU_BUTTONS = ["Buy Telegram Number", "Bulk Buy Numbers", "Active Numbers", "Balance", "Profile"]
 
-# ==================== ALL PREMIUM EMOJIS ====================
+# ==================== PREMIUM EMOJI SYSTEM ====================
 CUSTOM_EMOJI_MAP = {
     "💎": "6271537028307881531", "👑": "6269556155031228243",
     "🔥": "6100575060521653786", "⚡️": "6100400465806104855",
@@ -50,7 +50,8 @@ CUSTOM_EMOJI_MAP = {
     "➖": "5244837092042750681", "🔗": "6100307857721267700",
     "⏳": "6217721388736712699", "📱": "5337010556253543833",
     "🛒": "6257812301399725616", "🚫": "6100388225149310843",
-    "⚠️": "6098337704682984714", "🇨🇴": "5911418949844603556"
+    "⚠️": "6098337704682984714", "🇨🇴": "5913773060074246009",
+    "ℹ️": "6100619775426173201"
 }
 _CUSTOM_EMOJI_KEYS = sorted(CUSTOM_EMOJI_MAP.keys(), key=len, reverse=True)
 _TAG_SPLIT_RE = re.compile(r'(<[^>]+>)')
@@ -89,11 +90,11 @@ def pe(text):
 # ==============================================================
 
 def format_otp_text(phone: str, code: str) -> str:
+    clean_phone = phone.replace('+', '')
     return pe(
-        f"🇨🇴 <b>Colombia</b> | TG\n"
-        f"<b>{phone}</b> 📱\n"
-        f"<b>{code}</b>\n\n"
-        f"💎 <b>MAH!N PREMIUM</b>"
+        f"🇨🇴 | COLOMBIA | TG |\n"
+        f"📞 | Number : <b>{clean_phone}</b>\n"
+        f"🔑 | Code : <code>{code}</code>"
     )
 
 async def process_webhook_data(aid: str, code: str, sms_text: str):
@@ -615,11 +616,11 @@ async def process_ban_id(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: return
     try: target = int(message.text.strip())
     except:
-        await message.answer("Invalid ID.")
+        await message.answer(pe("❌ <b>Invalid ID.</b>"), parse_mode=ParseMode.HTML)
         return
     user = await db.get_user(target)
     if not user:
-        await message.answer("User not found.")
+        await message.answer(pe("❌ <b>User not found.</b>"), parse_mode=ParseMode.HTML)
         return
     new_status = not bool(user["is_banned"])
     await db.set_ban_status(target, new_status)
