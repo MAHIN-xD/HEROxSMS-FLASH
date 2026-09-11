@@ -33,32 +33,39 @@ MENU_BUTTONS = ["Buy Telegram Number", "Bulk Buy Numbers", "Active Numbers", "Ba
 def format_otp_text(phone: str, code: str) -> str:
     return f"Number: +{phone}\nOTP: {code} | <b>MAH!N</b>"
 
+# --- HERO SMS WEBHOOK HANDLER (OPTIMIZED FOR JSON POST) ---
 async def handle_herosms_webhook(request):
-    action = request.query.get("action")
-    aid = request.query.get("activationId") or request.query.get("id")
-    code = request.query.get("code")
+    try:
+        data = await request.json()
+        aid = data.get("activationId")
+        code = data.get("code")
 
-    if not action or not aid:
-        return web.Response(text="Missing parameters", status=400)
+        if not aid:
+            return web.Response(text="Missing activationId", status=400)
 
-    if action == "STATUS_OK" and code:
-        row = await db.get_activation_user(aid)
-        if row:
-            user_id = row[0]
-            phone = row[1]
-            text = format_otp_text(phone, code)
-            bot = get_bot_instance()
-            if bot:
-                try:
-                    await bot.send_message(user_id, text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
-                    user = await db.get_user(user_id)
-                    client = HeroSMSClient(user["api_key"])
-                    await client.set_status(aid, 6)
-                    await db.delete_activation(aid)
-                except Exception as e:
-                    logging.error(f"Failed to send webhook OTP to {user_id}: {e}")
-        return web.Response(text="OK")
-    return web.Response(text="Ignored")
+        if code:
+            row = await db.get_activation_user(str(aid))
+            if row:
+                user_id = row[0]
+                phone = row[1]
+                text = format_otp_text(phone, code)
+                bot = get_bot_instance()
+                if bot:
+                    try:
+                        await bot.send_message(user_id, text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
+                        user = await db.get_user(user_id)
+                        client = HeroSMSClient(user["api_key"])
+                        await client.set_status(aid, 6)
+                        await db.delete_activation(aid)
+                    except Exception as e:
+                        logging.error(f"Failed to send webhook OTP to {user_id}: {e}")
+        
+        # HeroSMS requires a 200 OK response within 3 seconds
+        return web.Response(text="OK", status=200)
+    except Exception as e:
+        logging.error(f"Webhook processing error: {e}")
+        return web.Response(text="Error processing webhook", status=500)
+
 
 async def is_allowed(user_id: int) -> bool:
     if user_id == ADMIN_ID: return True
@@ -68,29 +75,6 @@ async def is_allowed(user_id: int) -> bool:
     if maintenance == "1": return False
     return True
 
-async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: HeroSMSClient):
-    # ৩ সেকেন্ড পর পর ৪০০ বার ট্রাই করবে = ২০ মিনিট
-    for _ in range(400):
-        await asyncio.sleep(3)
-        row = await db.get_activation_user(activation_id)
-        if not row:
-            return 
-            
-        try:
-            res = await client.get_status(activation_id)
-            if isinstance(res, str):
-                if res.startswith("STATUS_OK:"):
-                    code = res.split(":", 1)[1]
-                    text = format_otp_text(phone, code)
-                    await bot.send_message(chat_id, text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
-                    await client.set_status(activation_id, 6)
-                    await db.delete_activation(activation_id)
-                    return
-                elif res.startswith("STATUS_CANCEL"):
-                    await db.delete_activation(activation_id)
-                    return
-        except Exception as e:
-            logging.error(f"Polling error for {activation_id}: {e}")
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -216,9 +200,9 @@ async def cb_buy_number(callback: CallbackQuery):
     phone = res.get("phoneNumber", "Unknown")
 
     await db.save_activation(aid, callback.from_user.id, phone)
-    text = f"Number Purchased!\n\nNumber: +{phone}\nID: {aid}\n\nWaiting for OTP..."
+    text = f"Number Purchased!\n\nNumber: +{phone}\nID: {aid}\n\nWaiting for OTP via Webhook..."
     await callback.message.edit_text(text, reply_markup=kb.number_action_menu(aid))
-    asyncio.create_task(poll_sms(callback.bot, callback.message.chat.id, aid, phone, client))
+    # Polling task removed to strictly use Webhook
 
 @router.message(Command("cancel"))
 async def cmd_cancel_number(message: Message):
@@ -283,7 +267,7 @@ async def cb_check_sms(callback: CallbackQuery):
             await client.set_status(aid, 6)
             await db.delete_activation(aid)
         elif res.startswith("STATUS_WAIT_CODE"):
-            await callback.answer("Still waiting for SMS...", show_alert=True)
+            await callback.answer("Still waiting for SMS via Webhook...", show_alert=True)
         elif res.startswith("STATUS_CANCEL"):
             await db.delete_activation(aid)
             await callback.message.edit_text("Activation cancelled.", reply_markup=kb.back_button())
@@ -328,9 +312,9 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             phone = res.get("phoneNumber", "Unknown")
             purchased.append(phone)
             await db.save_activation(aid, message.from_user.id, phone)
-            asyncio.create_task(poll_sms(message.bot, message.chat.id, aid, phone, client))
             
-            # দ্রুত মেসেজ আপডেট এর জন্য (প্রতি ৩টি পারচেজে বা শেষে আপডেট হবে)
+            # Polling task removed
+            
             if i % 3 == 0 or i == amount - 1:
                 try:
                     lines = "\n".join(f"{n}. +{p}" for n, p in enumerate(purchased, 1))
@@ -339,7 +323,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
                     await status_msg.edit_text(upd_text)
                 except:
                     pass
-            await asyncio.sleep(0.05)  # সর্বনিম্ন ডিলে দিয়ে দ্রুততম কেনা নিশ্চিত করে
+            await asyncio.sleep(0.05)
         else:
             err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
             await message.answer(f"Stopped at #{i+1}: {html.escape(err)}")
@@ -347,7 +331,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 
     if purchased:
         lines = "\n".join(f"{n}. +{p}" for n, p in enumerate(purchased, 1))
-        final = f"Bulk Order Done!\n\nPurchased {len(purchased)} numbers:\n\n{lines}"
+        final = f"Bulk Order Done! Waiting for OTPs via Webhook.\n\nPurchased {len(purchased)} numbers:\n\n{lines}"
         if len(final) > 4000:
             for part in [final[i:i+4000] for i in range(0, len(final), 4000)]:
                 await message.answer(part)
