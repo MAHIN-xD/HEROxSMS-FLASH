@@ -151,7 +151,7 @@ def format_otp_text(phone: str, code: str) -> str:
         f"🐙 | Code : <code>{code}</code>"
     )
 
-async def process_otp(aid: str, code: str, sms_text: str, phone: str):
+async def process_otp(aid: str, code: str, sms_text: str, phone: str, bot=None, chat_id=None):
     display_code = str(code if code else sms_text).strip()
     if not display_code:
         return
@@ -168,20 +168,27 @@ async def process_otp(aid: str, code: str, sms_text: str, phone: str):
     user_id = row[0]
     actual_phone = row[1] or phone
     
+    # Save to history 
     save_history(user_id, aid, actual_phone, display_code)
     
     text = format_otp_text(actual_phone, display_code)
-    bot = get_bot_instance()
     
-    if bot:
+    # Ensuring bot instance is not lost
+    bot_to_use = bot or get_bot_instance()
+    target_chat = chat_id or user_id
+    
+    if bot_to_use:
         try:
-            await bot.send_message(user_id, text, reply_markup=kb.otp_copy_menu(display_code), parse_mode=ParseMode.HTML)
+            await bot_to_use.send_message(target_chat, text, reply_markup=kb.otp_copy_menu(display_code), parse_mode=ParseMode.HTML)
             user = await db.get_user(user_id)
             if user and user.get("api_key"):
                 client = HeroSMSClient(user["api_key"])
+                # Setting status to 3 to wait for multiple OTPs
                 await client.set_status(aid, 3)
         except Exception as e:
             logging.error(f"Failed to process OTP: {e}")
+    else:
+        logging.error("CRITICAL: Bot instance is missing! OTP saved to history but could not be sent to user.")
 
 # ==================== HYBRID WEBHOOK HANDLER (GET + POST) ====================
 async def handle_herosms_webhook(request):
@@ -189,14 +196,12 @@ async def handle_herosms_webhook(request):
     code = None
     sms_text = ""
 
-    # 1. URL Query Parameters check (GET & POST)
     query_aid = request.query.get("activationId") or request.query.get("id") or request.query.get("activation_id")
     query_code = request.query.get("code") or request.query.get("text")
     if query_aid:
         aid = str(query_aid)
         code = query_code
 
-    # 2. JSON Body check (POST)
     if request.method == "POST" and not aid:
         try:
             data = await request.json()
@@ -210,7 +215,7 @@ async def handle_herosms_webhook(request):
     if aid and (code or sms_text):
         row = await db.get_activation_user(aid)
         phone = row[1] if row else ""
-        asyncio.create_task(process_otp(aid, code, sms_text, phone))
+        asyncio.create_task(process_otp(aid, code, sms_text, phone, bot=get_bot_instance()))
         return web.Response(text="OK", status=200)
 
     return web.Response(text="OK", status=200)
@@ -235,14 +240,16 @@ async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: He
             if isinstance(res, str):
                 if res.startswith("STATUS_OK:"):
                     code = res.split(":", 1)[1]
-                    await process_otp(activation_id, code, "", phone)
+                    # Passing bot directly to ensure printing
+                    await process_otp(activation_id, code, "", phone, bot=bot, chat_id=chat_id)
                 elif res.startswith("STATUS_CANCEL"):
                     await db.delete_activation(activation_id)
                     return
             elif isinstance(res, dict):
                 code = res.get("sms") or res.get("code") or res.get("text")
                 if code:
-                    await process_otp(activation_id, str(code), "", phone)
+                    # Passing bot directly to ensure printing
+                    await process_otp(activation_id, str(code), "", phone, bot=bot, chat_id=chat_id)
         except Exception as e:
             pass
             
@@ -347,7 +354,7 @@ async def cmd_history(message: Message):
         
     lines = [pe(f"📜 <b>History (Last 24h) : {len(recent)} items</b>\n")]
     for item in reversed(recent):
-        lines.append(f"📞 <b>+{item['phone']}</b>\n🔑 OTP: <code>{item['code']}</code>\n🆔 Order ID: <code>{item['aid']}</code>\n")
+        lines.append(pe(f"☑️ <b>+{item['phone']}</b>\n🐙 OTP: <code>{item['code']}</code>\n🆔 Order ID: <code>{item['aid']}</code>\n"))
         
     msg = "\n".join(lines)
     if len(msg) > 4000:
@@ -503,7 +510,7 @@ async def cb_check_sms(callback: CallbackQuery):
     if isinstance(res, str):
         if res.startswith("STATUS_OK:"):
             code = res.split(":", 1)[1]
-            await process_otp(aid, code, "", phone)
+            await process_otp(aid, code, "", phone, bot=callback.bot, chat_id=callback.message.chat.id)
             await callback.answer("Success", show_alert=False)
         elif res.startswith("STATUS_WAIT_CODE") or res.startswith("STATUS_WAIT_RETRY"):
             await callback.answer("Still waiting for SMS...", show_alert=True)
