@@ -51,7 +51,8 @@ CUSTOM_EMOJI_MAP = {
     "⏳": "6217721388736712699", "📱": "5337010556253543833",
     "🛒": "6257812301399725616", "🚫": "6100388225149310843",
     "⚠️": "6098337704682984714", "🇨🇴": "5913773060074246009",
-    "ℹ️": "6100619775426173201", "✈️": "5271801931814165886" # Telegram Premium Logo ID
+    "ℹ️": "6100619775426173201", "✈️": "5271801931814165886",
+    "🐙": "5417836094098007862" # GitHub Premium Logo
 }
 _CUSTOM_EMOJI_KEYS = sorted(CUSTOM_EMOJI_MAP.keys(), key=len, reverse=True)
 _TAG_SPLIT_RE = re.compile(r'(<[^>]+>)')
@@ -93,8 +94,8 @@ def format_otp_text(phone: str, code: str) -> str:
     clean_phone = phone.replace('+', '')
     return pe(
         f"🇨🇴 | <b>COLOMBIA</b> | TG ✈️\n\n"
-        f"📞 | Number : <b>{clean_phone}</b>\n"
-        f"🔑 | Code : <code>{code}</code>"
+        f"📞 | Number : <b><code>+{clean_phone}</code></b>\n"
+        f"🐙 | Code : <code>{code}</code>"
     )
 
 async def process_webhook_data(aid: str, code: str, sms_text: str):
@@ -102,7 +103,6 @@ async def process_webhook_data(aid: str, code: str, sms_text: str):
     if not row:
         return
         
-    # EARLY DELETION TO PREVENT DOUBLE SMS
     await db.delete_activation(aid)
     
     user_id = row[0]
@@ -161,7 +161,6 @@ async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: He
             res = await client.get_status(activation_id)
             if isinstance(res, str):
                 if res.startswith("STATUS_OK:"):
-                    # EARLY DELETION TO PREVENT DOUBLE SMS
                     await db.delete_activation(activation_id)
                     
                     code = res.split(":", 1)[1]
@@ -191,7 +190,7 @@ async def cmd_start(message: Message, state: FSMContext):
         return
 
     if not user or not user["api_key"]:
-        await message.answer(pe("💎 <b>WELCOME TO HEROSMS PREMIUM</b> 💎\n\n⚡️ Please send your API Key to get started."), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.HTML)
+        await message.answer(pe("💎 <b>WELCOME TO HEROSMS </b> 💎\n\n⚡️ Please send your API Key to get started..."), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.HTML)
         await state.set_state(BotStates.waiting_for_api_key)
     else:
         await message.answer(pe("✅ <b>Welcome back!</b>"), reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
@@ -304,12 +303,12 @@ async def cb_buy_number(callback: CallbackQuery):
         return
 
     aid = str(res["activationId"])
-    phone = res.get("phoneNumber", "Unknown")
+    phone = str(res.get("phoneNumber", "Unknown")).replace('+', '')
 
     await db.save_activation(aid, callback.from_user.id, phone)
     text = pe(
         f"✅ <b>NUMBER PURCHASED!</b>\n\n"
-        f"<blockquote>📞 Number: <code>+{phone}</code>\n"
+        f"<blockquote>📞 Number: <b><code>+{phone}</code></b>\n"
         f"🆔 ID: <code>{aid}</code></blockquote>\n\n"
         f"⏳ <b>Waiting for OTP...</b>"
     )
@@ -378,7 +377,6 @@ async def cb_check_sms(callback: CallbackQuery):
     res = await client.get_status(aid)
     if isinstance(res, str):
         if res.startswith("STATUS_OK:"):
-            # EARLY DELETION
             await db.delete_activation(aid)
             code = res.split(":", 1)[1]
             text = format_otp_text(phone, code)
@@ -399,7 +397,7 @@ async def text_bulk_buy(message: Message, state: FSMContext):
     if not await is_allowed(message.from_user.id): return
     user = await db.get_user(message.from_user.id)
     if not user or not user["api_key"]: return
-    await message.answer(pe("📦 <b>Bulk Purchase</b>\n\nHow many numbers do you want to buy? (1-500)"), parse_mode=ParseMode.HTML)
+    await message.answer(pe("📦 <b>Bulk Purchase</b>\n\nHow many numbers do you want to buy? (1-100)"), parse_mode=ParseMode.HTML)
     await state.set_state(BotStates.waiting_for_bulk_amount)
 
 @router.message(BotStates.waiting_for_bulk_amount)
@@ -420,22 +418,23 @@ async def process_bulk_amount(message: Message, state: FSMContext):
     user = await db.get_user(message.from_user.id)
     client = HeroSMSClient(user["api_key"])
 
-    status_msg = await message.answer(pe(f"⏳ <b>Buying {amount} numbers...</b>"), parse_mode=ParseMode.HTML)
+    status_msg = await message.answer(pe(f"⏳ <b>Buying {amount} numbers... (0%)</b>"), parse_mode=ParseMode.HTML)
     
     purchased = []
     for i in range(amount):
         res = await client.get_number(service=TG_SERVICE, country=COLOMBIA_ID, max_price=MAX_PRICE)
         if isinstance(res, dict) and "activationId" in res:
             aid = str(res["activationId"])
-            phone = res.get("phoneNumber", "Unknown")
+            phone = str(res.get("phoneNumber", "Unknown")).replace('+', '')
             purchased.append(phone)
             await db.save_activation(aid, message.from_user.id, phone)
             asyncio.create_task(poll_sms(message.bot, message.chat.id, aid, phone, client))
             
             if i % 3 == 0 or i == amount - 1:
                 try:
-                    lines = "\n".join(f"{n}. <code>+{p}</code>" for n, p in enumerate(purchased, 1))
-                    upd_text = pe(f"⏳ <b>Buying {amount} numbers... ({len(purchased)}/{amount})</b>\n\n<blockquote>{lines}</blockquote>")
+                    lines = "\n".join(f"{n}. <b><code>+{p}</code></b>" for n, p in enumerate(purchased, 1))
+                    percentage = int((len(purchased) / amount) * 100)
+                    upd_text = pe(f"⏳ <b>Buying {amount} numbers... ({len(purchased)}/{amount}) {percentage}%</b>\n\n<blockquote>{lines}</blockquote>")
                     if len(upd_text) > 4000: upd_text = upd_text[:3990] + "..."
                     await status_msg.edit_text(upd_text, parse_mode=ParseMode.HTML)
                 except:
@@ -447,8 +446,8 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             break
 
     if purchased:
-        lines = "\n".join(f"{n}. <code>+{p}</code>" for n, p in enumerate(purchased, 1))
-        final = pe(f"✅ <b>Bulk Order Done!</b>\n\nPurchased {len(purchased)} numbers:\n\n<blockquote>{lines}</blockquote>")
+        lines = "\n".join(f"{n}. <b><code>+{p}</code></b>" for n, p in enumerate(purchased, 1))
+        final = pe(f"✅ <b>Bulk Order Done! 100%</b>\n\nPurchased {len(purchased)} numbers:\n\n<blockquote>{lines}</blockquote>")
         if len(final) > 4000:
             for part in [final[i:i+4000] for i in range(0, len(final), 4000)]:
                 await message.answer(part, parse_mode=ParseMode.HTML)
