@@ -51,7 +51,7 @@ CUSTOM_EMOJI_MAP = {
     "⏳": "6217721388736712699", "📱": "5337010556253543833",
     "🛒": "6257812301399725616", "🚫": "6100388225149310843",
     "⚠️": "6098337704682984714", "🇨🇴": "5913773060074246009",
-    "ℹ️": "6100619775426173201"
+    "ℹ️": "6100619775426173201", "✈️": "5271801931814165886" # Telegram Premium Logo ID
 }
 _CUSTOM_EMOJI_KEYS = sorted(CUSTOM_EMOJI_MAP.keys(), key=len, reverse=True)
 _TAG_SPLIT_RE = re.compile(r'(<[^>]+>)')
@@ -92,7 +92,7 @@ def pe(text):
 def format_otp_text(phone: str, code: str) -> str:
     clean_phone = phone.replace('+', '')
     return pe(
-        f"🇨🇴 | COLOMBIA | TG |\n"
+        f"🇨🇴 | <b>COLOMBIA</b> | TG ✈️\n\n"
         f"📞 | Number : <b>{clean_phone}</b>\n"
         f"🔑 | Code : <code>{code}</code>"
     )
@@ -102,6 +102,7 @@ async def process_webhook_data(aid: str, code: str, sms_text: str):
     if not row:
         return
         
+    # EARLY DELETION TO PREVENT DOUBLE SMS
     await db.delete_activation(aid)
     
     user_id = row[0]
@@ -160,6 +161,7 @@ async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: He
             res = await client.get_status(activation_id)
             if isinstance(res, str):
                 if res.startswith("STATUS_OK:"):
+                    # EARLY DELETION TO PREVENT DOUBLE SMS
                     await db.delete_activation(activation_id)
                     
                     code = res.split(":", 1)[1]
@@ -376,8 +378,8 @@ async def cb_check_sms(callback: CallbackQuery):
     res = await client.get_status(aid)
     if isinstance(res, str):
         if res.startswith("STATUS_OK:"):
+            # EARLY DELETION
             await db.delete_activation(aid)
-            
             code = res.split(":", 1)[1]
             text = format_otp_text(phone, code)
             await callback.message.edit_text(text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
