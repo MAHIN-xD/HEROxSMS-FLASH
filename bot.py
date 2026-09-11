@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import sys
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher
@@ -15,55 +14,55 @@ TOKEN = os.getenv("BOT_TOKEN", "8202597792:AAFO7lRfZXwBzQuvkiO4CBBegFiluI9dMz0")
 PORT  = int(os.getenv("PORT", 8080))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
 
+
 async def on_startup(bot: Bot):
     await db.init_db()
     if WEBHOOK_URL:
-        # টেলিগ্রাম ওয়েবহুক সেট করা হচ্ছে
         await bot.set_webhook(f"{WEBHOOK_URL}/webhook/telegram")
-        logging.info(f"Telegram Webhook set to: {WEBHOOK_URL}/webhook/telegram")
     else:
-        logging.warning("WEBHOOK_URL is not set! Telegram updates will not work.")
-
-async def on_shutdown(bot: Bot):
-    await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("Webhook deleted on shutdown.")
+        await bot.delete_webhook(drop_pending_updates=True)
 
 async def handle_ping(request):
-    return web.Response(text="Bot is alive and highly optimized!")
+    return web.Response(text="Bot is alive!")
 
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    if not WEBHOOK_URL:
-        logging.error("You must set the WEBHOOK_URL environment variable to run this unified webhook server.")
-        sys.exit(1)
-
+    # Changed parse_mode to HTML to prevent markdown parsing errors with API keys
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     set_bot_instance(bot)
     
     dp = Dispatcher()
     dp.include_router(router)
     dp.startup.register(on_startup)
-    dp.shutdown.register(on_shutdown)
 
     app = web.Application()
     
-    # Health Check
     app.router.add_get("/", handle_ping)
-    
-    # HeroSMS Webhook (Strictly POST as per API docs)
+    app.router.add_get("/herosms_webhook", handle_herosms_webhook)
     app.router.add_post("/herosms_webhook", handle_herosms_webhook)
 
-    # Telegram Webhook
-    SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-    ).register(app, path="/webhook/telegram")
-    
-    setup_application(app, dp, bot=bot)
-    
-    logging.info(f"Starting unified Web Server on port {PORT}...")
-    web.run_app(app, host="0.0.0.0", port=PORT)
+    if WEBHOOK_URL:
+        SimpleRequestHandler(
+            dispatcher=dp,
+            bot=bot,
+        ).register(app, path="/webhook/telegram")
+        setup_application(app, dp, bot=bot)
+        
+        logging.info(f"Starting web server on port {PORT} with webhook")
+        web.run_app(app, host="0.0.0.0", port=PORT)
+    else:
+        async def start_polling_and_server():
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, "0.0.0.0", PORT)
+            await site.start()
+            logging.info(f"Web server running on port {PORT} (HeroSMS Webhook active)")
+            
+            await bot.delete_webhook(drop_pending_updates=True)
+            await dp.start_polling(bot)
+            
+        asyncio.run(start_polling_and_server())
 
 if __name__ == "__main__":
     try:
