@@ -152,7 +152,11 @@ def format_otp_text(phone: str, code: str) -> str:
     )
 
 async def process_otp(aid: str, code: str, sms_text: str, phone: str):
-    cache_key = f"{aid}:{code}"
+    display_code = str(code if code else sms_text).strip()
+    if not display_code:
+        return
+
+    cache_key = f"{aid}:{display_code}"
     if cache_key in sent_otps:
         return
     sent_otps.add(cache_key)
@@ -162,46 +166,54 @@ async def process_otp(aid: str, code: str, sms_text: str, phone: str):
         return
         
     user_id = row[0]
+    actual_phone = row[1] or phone
     
-    display_code = code if code else sms_text
-    save_history(user_id, aid, phone, display_code)
+    save_history(user_id, aid, actual_phone, display_code)
     
-    text = format_otp_text(phone, display_code)
+    text = format_otp_text(actual_phone, display_code)
     bot = get_bot_instance()
     
     if bot:
         try:
             await bot.send_message(user_id, text, reply_markup=kb.otp_copy_menu(display_code), parse_mode=ParseMode.HTML)
             user = await db.get_user(user_id)
-            client = HeroSMSClient(user["api_key"])
-            # Status 3 to keep activation alive for 2nd/3rd OTPs (20 mins)
-            await client.set_status(aid, 3)
+            if user and user.get("api_key"):
+                client = HeroSMSClient(user["api_key"])
+                await client.set_status(aid, 3)
         except Exception as e:
             logging.error(f"Failed to process OTP: {e}")
 
+# ==================== HYBRID WEBHOOK HANDLER (GET + POST) ====================
 async def handle_herosms_webhook(request):
-    if request.method != "POST":
-        return web.Response(text="Only POST allowed", status=405)
-        
-    try:
-        data = await request.json()
-    except:
-        return web.Response(text="Invalid JSON", status=400)
+    aid = None
+    code = None
+    sms_text = ""
 
-    aid = str(data.get("activationId", ""))
-    code = data.get("code", "")
-    sms_text = data.get("text", "")
+    # 1. URL Query Parameters check (GET & POST)
+    query_aid = request.query.get("activationId") or request.query.get("id") or request.query.get("activation_id")
+    query_code = request.query.get("code") or request.query.get("text")
+    if query_aid:
+        aid = str(query_aid)
+        code = query_code
 
-    if not aid:
-        return web.Response(text="Missing activationId", status=400)
+    # 2. JSON Body check (POST)
+    if request.method == "POST" and not aid:
+        try:
+            data = await request.json()
+            if isinstance(data, dict):
+                aid = str(data.get("activationId") or data.get("id") or data.get("activation_id") or "")
+                code = data.get("code") or data.get("text")
+                sms_text = data.get("sms") or data.get("text") or ""
+        except:
+            pass
 
-    if code or sms_text:
+    if aid and (code or sms_text):
         row = await db.get_activation_user(aid)
-        if row:
-            phone = row[1]
-            asyncio.create_task(process_otp(aid, code, sms_text, phone))
+        phone = row[1] if row else ""
+        asyncio.create_task(process_otp(aid, code, sms_text, phone))
+        return web.Response(text="OK", status=200)
 
-    return web.json_response({"status": "success"}, status=200)
+    return web.Response(text="OK", status=200)
 
 async def is_allowed(user_id: int) -> bool:
     if user_id == ADMIN_ID: return True
@@ -227,10 +239,13 @@ async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: He
                 elif res.startswith("STATUS_CANCEL"):
                     await db.delete_activation(activation_id)
                     return
+            elif isinstance(res, dict):
+                code = res.get("sms") or res.get("code") or res.get("text")
+                if code:
+                    await process_otp(activation_id, str(code), "", phone)
         except Exception as e:
             pass
             
-    # Auto cleanup database after 20 minutes
     await db.delete_activation(activation_id)
 
 # ==================== LIVE BULK COUNTDOWN TASK ====================
@@ -451,7 +466,6 @@ async def cmd_cancel_number(message: Message):
     elif isinstance(cancel_res, str) and "EARLY_CANCEL_DENIED" in cancel_res:
         await message.answer(pe("❌ Cannot cancel within first 2 minutes."), parse_mode=ParseMode.HTML)
     else:
-        # Fallback finish and remove if cancel denied (e.g. OTP received)
         await client.set_status(aid_to_cancel, 6)
         await db.delete_activation(aid_to_cancel)
         await message.answer(pe(f"✅ <b>Finished & Removed</b> <code>{target}</code>."), parse_mode=ParseMode.HTML)
@@ -468,7 +482,6 @@ async def cb_cancel_single(callback: CallbackQuery):
     elif isinstance(res, str) and "EARLY_CANCEL_DENIED" in res:
         await callback.answer("Cannot cancel within first 2 minutes.", show_alert=True)
     else:
-        # Fallback finish and remove
         await client.set_status(aid, 6)
         await db.delete_activation(aid)
         await callback.message.edit_text(pe("✅ <b>Finished & Removed.</b>"), reply_markup=kb.back_button(), parse_mode=ParseMode.HTML)
