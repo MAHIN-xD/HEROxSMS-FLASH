@@ -31,12 +31,7 @@ MAX_PRICE   = 0.135
 MENU_BUTTONS = ["Buy Telegram Number", "Bulk Buy Numbers", "Active Numbers", "Balance", "Profile"]
 
 def format_otp_text(phone: str, code: str) -> str:
-    clean_phone = str(phone).replace('+', '')
-    return pe(
-        f"🇨🇴 | <b>COLOMBIA</b> | TG !\n\n"
-        f"📞 | <b>Number</b> : <code>+{clean_phone}</code>\n"
-        f"🐙 | <b>Code</b> : <b>{code}</b>"
-    )
+    return f"Number: +{phone}\nOTP: {code} | <b>MAH!N</b>"
 
 async def handle_herosms_webhook(request):
     action = request.query.get("action")
