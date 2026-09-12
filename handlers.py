@@ -70,8 +70,8 @@ async def is_allowed(user_id: int) -> bool:
 
 async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: HeroSMSClient):
     # ৩ সেকেন্ড পর পর ৪০০ বার ট্রাই করবে = ২০ মিনিট
-    for _ in range(600):
-        await asyncio.sleep(2)
+    for _ in range(400):
+        await asyncio.sleep(3)
         row = await db.get_activation_user(activation_id)
         if not row:
             return 
