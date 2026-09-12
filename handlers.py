@@ -5,6 +5,7 @@ import re
 import json
 import os
 from datetime import datetime, timedelta
+from aiohttp import web
 from aiogram import Router, F
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart, Command
@@ -150,7 +151,6 @@ def format_otp_text(phone: str, code: str) -> str:
         f"🐙 | Code : <code>{code}</code>"
     )
 
-# Ekhan theke webhook puro delete kora hoyeche. Polling thekei process_otp call hobe.
 async def process_otp(aid: str, code: str, sms_text: str, phone: str, bot=None, chat_id=None):
     display_code = str(code if code else sms_text).strip()
     if not display_code:
@@ -189,6 +189,10 @@ async def process_otp(aid: str, code: str, sms_text: str, phone: str, bot=None, 
     else:
         logging.error("CRITICAL: Bot instance is missing! OTP saved to history but could not be sent to user.")
 
+# DUMMY WEBHOOK FUNCTION TO PREVENT bot.py IMPORT ERROR
+async def handle_herosms_webhook(request):
+    return web.Response(text="Webhook is disabled. Bot is using 1.5s Polling.", status=200)
+
 async def is_allowed(user_id: int) -> bool:
     if user_id == ADMIN_ID: return True
     user = await db.get_user(user_id)
@@ -198,7 +202,6 @@ async def is_allowed(user_id: int) -> bool:
     return True
 
 async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: HeroSMSClient):
-    # 800 * 1.5s = 1200 seconds (20 minutes polling limit)
     for _ in range(800):
         await asyncio.sleep(1.5)
         row = await db.get_activation_user(activation_id)
