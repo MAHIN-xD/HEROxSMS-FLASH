@@ -31,7 +31,12 @@ MAX_PRICE   = 0.135
 MENU_BUTTONS = ["Buy Telegram Number", "Bulk Buy Numbers", "Active Numbers", "Balance", "Profile"]
 
 def format_otp_text(phone: str, code: str) -> str:
-    return f"Number: +{phone}\nOTP: {code} | <b>MAH!N</b>"
+    clean_phone = str(phone).replace('+', '')
+    return pe(
+        f"🇨🇴 | <b>COLOMBIA</b> | TG !\n\n"
+        f"📞 | <b>Number</b> : <code>+{clean_phone}</code>\n"
+        f"🐙 | <b>Code</b> : <b>{code}</b>"
+    )
 
 async def handle_herosms_webhook(request):
     action = request.query.get("action")
@@ -70,8 +75,8 @@ async def is_allowed(user_id: int) -> bool:
 
 async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: HeroSMSClient):
     # ৩ সেকেন্ড পর পর ৪০০ বার ট্রাই করবে = ২০ মিনিট
-    for _ in range(400):
-        await asyncio.sleep(3)
+    for _ in range(800):
+        await asyncio.sleep(1.5)
         row = await db.get_activation_user(activation_id)
         if not row:
             return 
