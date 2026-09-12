@@ -2,6 +2,9 @@ import asyncio
 import logging
 import html
 import re
+import json
+import os
+from datetime import datetime, timedelta
 from aiohttp import web
 from aiogram import Router, F
 from aiogram.enums import ParseMode
@@ -50,9 +53,7 @@ CUSTOM_EMOJI_MAP = {
     "➖": "5244837092042750681", "🔗": "6100307857721267700",
     "⏳": "6217721388736712699", "📱": "5337010556253543833",
     "🛒": "6257812301399725616", "🚫": "6100388225149310843",
-    "⚠️": "6098337704682984714", "🇨🇴": "5913773060074246009",
-    "ℹ️": "6100619775426173201", "✈️": "5271801931814165886",
-    "🐙": "5417836094098007862", "☑️": "5427009714745511004"
+    "⚠️": "6098337704682984714"
 }
 _CUSTOM_EMOJI_KEYS = sorted(CUSTOM_EMOJI_MAP.keys(), key=len, reverse=True)
 _TAG_SPLIT_RE = re.compile(r'(<[^>]+>)')
@@ -90,9 +91,60 @@ def pe(text):
     return ''.join(out)
 # ==============================================================
 
+# ==================== HISTORY SYSTEM ==========================
+HISTORY_FILE = "user_history.json"
+
+def save_history(user_id, aid, phone, code):
+    history = {}
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                history = json.load(f)
+        except: pass
+    
+    uid_str = str(user_id)
+    if uid_str not in history:
+        history[uid_str] = []
+        
+    history[uid_str].append({
+        "aid": str(aid),
+        "phone": str(phone).replace('+', ''),
+        "code": str(code),
+        "time": datetime.now().isoformat()
+    })
+    
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history, f)
+
+def get_24h_history(user_id):
+    history = {}
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                history = json.load(f)
+        except: pass
+        
+    uid_str = str(user_id)
+    user_hist = history.get(uid_str, [])
+    
+    now = datetime.now()
+    recent = []
+    for item in user_hist:
+        try:
+            dt = datetime.fromisoformat(item["time"])
+            if now - dt <= timedelta(hours=24):
+                recent.append(item)
+        except: pass
+        
+    return recent
+# ==============================================================
+
+sent_otps = set()
+
+# NO PREMIUM EMOJI IN OTP TEXT TO PREVENT 400 BAD REQUEST ERRORS
 def format_otp_text(phone: str, code: str) -> str:
     clean_phone = str(phone).replace('+', '')
-    return pe(
+    return (
         f"🇨🇴 | <b>COLOMBIA</b> | TG ✈️\n\n"
         f"☑️ | Number : <b><code>+{clean_phone}</code></b>\n"
         f"🐙 | Code : <code>{code}</code>\n\n"
@@ -112,6 +164,10 @@ async def handle_herosms_webhook(request):
         if row:
             user_id = row[0]
             phone = row[1]
+            
+            # Save to history 
+            save_history(user_id, aid, phone, code)
+            
             text = format_otp_text(phone, code)
             bot = get_bot_instance()
             if bot:
@@ -135,7 +191,6 @@ async def is_allowed(user_id: int) -> bool:
     return True
 
 async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: HeroSMSClient):
-    # ৩ সেকেন্ড পর পর ৪০০ বার ট্রাই করবে = ২০ মিনিট
     for _ in range(400):
         await asyncio.sleep(3)
         row = await db.get_activation_user(activation_id)
@@ -147,6 +202,15 @@ async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: He
             if isinstance(res, str):
                 if res.startswith("STATUS_OK:"):
                     code = res.split(":", 1)[1]
+                    
+                    # Deduplication & History Save
+                    cache_key = f"{activation_id}:{code}"
+                    if cache_key in sent_otps:
+                        continue
+                    sent_otps.add(cache_key)
+                    
+                    save_history(row[0], activation_id, phone, code)
+                    
                     text = format_otp_text(phone, code)
                     await bot.send_message(chat_id, text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
                     await client.set_status(activation_id, 6)
@@ -221,6 +285,25 @@ async def cb_menu_main(callback: CallbackQuery, state: FSMContext):
     except: pass
     await callback.message.answer(pe("✅ <b>Welcome back!</b>"), reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
 
+@router.message(Command("history"))
+async def cmd_history(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    
+    recent = get_24h_history(message.from_user.id)
+    if not recent:
+        await message.answer(pe("📜 <b>History (Last 24h)</b>\n\n❌ No successful activations found."), parse_mode=ParseMode.HTML)
+        return
+        
+    lines = [pe("📜 <b>History (Last 24h) : " + str(len(recent)) + " items</b>\n")]
+    for item in reversed(recent):
+        lines.append(f"☑️ <b>+{item['phone']}</b>\n🐙 OTP: <code>{item['code']}</code>\n🆔 Order ID: <code>{item['aid']}</code>\n")
+        
+    msg = "\n".join(lines)
+    if len(msg) > 4000:
+        msg = msg[:3990] + "..."
+        
+    await message.answer(msg, parse_mode=ParseMode.HTML)
+
 @router.message(F.text == "Profile")
 async def text_profile(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -291,10 +374,15 @@ async def cb_buy_number(callback: CallbackQuery):
         return
 
     aid = str(res["activationId"])
-    phone = res.get("phoneNumber", "Unknown")
+    phone = str(res.get("phoneNumber", "Unknown")).replace('+', '')
 
     await db.save_activation(aid, callback.from_user.id, phone)
-    text = pe(f"✅ <b>Number Purchased!</b>\n\n📞 Number: <b>+{phone}</b>\n🆔 ID: <code>{aid}</code>\n\n⏳ Waiting for OTP...")
+    text = pe(
+        f"✅ <b>NUMBER PURCHASED!</b>\n\n"
+        f"📞 Number: <b>+{phone}</b>\n"
+        f"🆔 ID: <code>{aid}</code>\n\n"
+        f"⏳ <b>Waiting for OTP...</b>"
+    )
     await callback.message.edit_text(text, reply_markup=kb.number_action_menu(aid), parse_mode=ParseMode.HTML)
     asyncio.create_task(poll_sms(callback.bot, callback.message.chat.id, aid, phone, client))
 
@@ -324,10 +412,10 @@ async def cmd_cancel_number(message: Message):
         await db.delete_activation(aid_to_cancel)
         await message.answer(pe(f"✅ <b>Successfully cancelled</b> <code>{target}</code>. Balance refunded."), parse_mode=ParseMode.HTML)
     elif isinstance(cancel_res, str) and "EARLY_CANCEL_DENIED" in cancel_res:
-        await message.answer(pe("⚠️ <b>Cannot cancel within first 2 minutes.</b>"), parse_mode=ParseMode.HTML)
+        await message.answer(pe("❌ Cannot cancel within first 2 minutes."), parse_mode=ParseMode.HTML)
     else:
         err = cancel_res.get("title", str(cancel_res)) if isinstance(cancel_res, dict) else str(cancel_res)
-        await message.answer(pe(f"❌ <b>Failed to cancel {target}:</b> {html.escape(err)}"), parse_mode=ParseMode.HTML)
+        await message.answer(pe(f"❌ <b>Failed to cancel</b> <code>{target}</code>: {html.escape(err)}"), parse_mode=ParseMode.HTML)
 
 @router.callback_query(F.data.startswith("single_cancel_"))
 async def cb_cancel_single(callback: CallbackQuery):
@@ -335,7 +423,7 @@ async def cb_cancel_single(callback: CallbackQuery):
     user = await db.get_user(callback.from_user.id)
     client = HeroSMSClient(user["api_key"])
     res = await client.set_status(aid, 8)
-    if isinstance(res, str) and res.startswith("ACCESS_CANCEL"):
+    if isinstance(res, str) and (res.startswith("ACCESS_CANCEL") or res.startswith("STATUS_CANCEL")):
         await db.delete_activation(aid)
         await callback.message.edit_text(pe("✅ <b>Cancelled. Balance refunded.</b>"), reply_markup=kb.back_button(), parse_mode=ParseMode.HTML)
     elif isinstance(res, str) and "EARLY_CANCEL_DENIED" in res:
@@ -356,11 +444,12 @@ async def cb_check_sms(callback: CallbackQuery):
     if isinstance(res, str):
         if res.startswith("STATUS_OK:"):
             code = res.split(":", 1)[1]
+            save_history(callback.from_user.id, aid, phone, code)
             text = format_otp_text(phone, code)
             await callback.message.edit_text(text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
             await client.set_status(aid, 6)
             await db.delete_activation(aid)
-        elif res.startswith("STATUS_WAIT_CODE"):
+        elif res.startswith("STATUS_WAIT_CODE") or res.startswith("STATUS_WAIT_RETRY"):
             await callback.answer("Still waiting for SMS...", show_alert=True)
         elif res.startswith("STATUS_CANCEL"):
             await db.delete_activation(aid)
@@ -369,6 +458,36 @@ async def cb_check_sms(callback: CallbackQuery):
             await callback.answer(f"Status: {res}", show_alert=True)
     else:
         await callback.answer("Error checking status.", show_alert=True)
+
+# ==================== LIVE BULK COUNTDOWN TASK ====================
+async def live_bulk_countdown(bot, chat_id, message_id, base_text):
+    for remaining in range(20 * 60, -1, -5):
+        mins, secs = divmod(remaining, 60)
+        clock_text = pe(f"⏳ <b>Auto Cancel In:</b> <code>{mins:02d}:{secs:02d}</code>")
+        full_text = f"{base_text}\n\n{clock_text}"
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=full_text,
+                parse_mode=ParseMode.HTML
+            )
+        except Exception as e:
+            if "Too Many Requests" in str(e):
+                await asyncio.sleep(10)
+            pass
+        await asyncio.sleep(5)
+        
+    try:
+        await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=f"{base_text}\n\n" + pe("❌ <b>Session Expired</b>"),
+            parse_mode=ParseMode.HTML
+        )
+    except:
+        pass
+# =================================================================
 
 @router.message(F.text == "Bulk Buy Numbers")
 async def text_bulk_buy(message: Message, state: FSMContext):
@@ -396,14 +515,14 @@ async def process_bulk_amount(message: Message, state: FSMContext):
     user = await db.get_user(message.from_user.id)
     client = HeroSMSClient(user["api_key"])
 
-    status_msg = await message.answer(pe(f"⏳ <b>Buying {amount} numbers...</b>"), parse_mode=ParseMode.HTML)
+    status_msg = await message.answer(pe(f"⏳ <b>Buying {amount} numbers... (0%)</b>"), parse_mode=ParseMode.HTML)
     
     purchased = []
     for i in range(amount):
         res = await client.get_number(service=TG_SERVICE, country=COLOMBIA_ID, max_price=MAX_PRICE)
         if isinstance(res, dict) and "activationId" in res:
             aid = str(res["activationId"])
-            phone = res.get("phoneNumber", "Unknown")
+            phone = str(res.get("phoneNumber", "Unknown")).replace('+', '')
             purchased.append(phone)
             await db.save_activation(aid, message.from_user.id, phone)
             asyncio.create_task(poll_sms(message.bot, message.chat.id, aid, phone, client))
@@ -411,12 +530,13 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             if i % 3 == 0 or i == amount - 1:
                 try:
                     lines = "\n".join(f"{n}. <b>+{p}</b>" for n, p in enumerate(purchased, 1))
-                    upd_text = f"⏳ <b>Buying {amount} numbers... ({len(purchased)}/{amount})</b>\n\n{lines}"
+                    percentage = int((len(purchased) / amount) * 100)
+                    upd_text = pe(f"⏳ <b>Buying {amount} numbers... ({len(purchased)}/{amount}) {percentage}%</b>\n\n{lines}")
                     if len(upd_text) > 4000: upd_text = upd_text[:3990] + "..."
-                    await status_msg.edit_text(pe(upd_text), parse_mode=ParseMode.HTML)
+                    await status_msg.edit_text(upd_text, parse_mode=ParseMode.HTML)
                 except:
                     pass
-            await asyncio.sleep(0.05) 
+            await asyncio.sleep(0.05)
         else:
             err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
             await message.answer(pe(f"❌ <b>Stopped at #{i+1}:</b> {html.escape(err)}"), parse_mode=ParseMode.HTML)
@@ -424,13 +544,15 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 
     if purchased:
         lines = "\n".join(f"{n}. <b>+{p}</b>" for n, p in enumerate(purchased, 1))
-        final = f"✅ <b>Bulk Order Done!</b>\n\nPurchased {len(purchased)} numbers:\n\n{lines}"
-        if len(final) > 4000:
-            for part in [final[i:i+4000] for i in range(0, len(final), 4000)]:
-                await message.answer(pe(part), parse_mode=ParseMode.HTML)
+        final = pe(f"✅ <b>Bulk Order Done! 100%</b>\n\nPurchased {len(purchased)} numbers:\n\n{lines}")
+        
+        if len(final) > 3800:
+            for part in [final[i:i+3800] for i in range(0, len(final), 3800)]:
+                await message.answer(part, parse_mode=ParseMode.HTML)
             await status_msg.delete()
         else:
-            await status_msg.edit_text(pe(final), parse_mode=ParseMode.HTML)
+            await status_msg.edit_text(final, parse_mode=ParseMode.HTML)
+            asyncio.create_task(live_bulk_countdown(message.bot, message.chat.id, status_msg.message_id, final))
     else:
         await status_msg.edit_text(pe("❌ <b>Could not purchase any numbers.</b>"), parse_mode=ParseMode.HTML)
 
@@ -577,7 +699,7 @@ async def process_broadcast(message: Message, state: FSMContext):
     sent = 0
     for uid in users:
         try:
-            await message.bot.send_message(uid, pe(f"📢 <b>Broadcast:\n\n{message.text}</b>"), parse_mode=ParseMode.HTML)
+            await message.bot.send_message(uid, pe(f"📢 <b>Broadcast:</b>\n\n{message.text}"), parse_mode=ParseMode.HTML)
             sent += 1
         except: pass
     await message.answer(pe(f"✅ <b>Sent to {sent} users.</b>"), parse_mode=ParseMode.HTML)
