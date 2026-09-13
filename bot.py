@@ -6,18 +6,34 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiogram.types import BotCommand, BotCommandScopeDefault
 
 import database as db
 from handlers import router, handle_herosms_webhook, set_bot_instance
 
-# টোকেন Environment থেকে আসবে, কোনো হার্ডকোডেড টোকেন থাকবে না
 TOKEN = os.getenv("BOT_TOKEN")
 PORT  = int(os.getenv("PORT", 8080))
-# শেষে স্ল্যাশ থাকলে তা কেটে ফেলা হবে
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
 
 async def on_startup(bot: Bot):
     await db.init_db()
+    
+    # টেলিগ্রামে '/' চাপলে যে কমান্ড লিস্ট পপ-আপ হবে
+    commands = [
+        BotCommand(command="start", description="বট শুরু করুন / প্রধান মেনু"),
+        BotCommand(command="cancel", description="চলমান নম্বর বাতিল করুন (/cancel <নম্বর/ID>)"),
+        BotCommand(command="retry", description="কোড পুনরায় চাইতে (/retry <নম্বর/ID>)"),
+        BotCommand(command="exclude", description="প্রিফিক্স ব্লকলিস্টে যোগ করুন (/exclude 57300)"),
+        BotCommand(command="unexclude", description="প্রিফিক্স ব্লকলিস্ট থেকে সরান (/unexclude 57350)"),
+        BotCommand(command="exclude_list", description="বাদ থাকা প্রিফিক্স তালিকা দেখুন"),
+        BotCommand(command="reset_exclude", description="ব্লকলিস্ট রিসেট করে ডিফল্ট 57350 করুন"),
+        BotCommand(command="operator", description="অপারেটর সেট করুন (/operator claro,tigo বা any)"),
+        BotCommand(command="operator_list", description="বর্তমান অপারেটর দেখুন"),
+        BotCommand(command="reset_operator", description="অপারেটর রিসেট করে any করুন"),
+    ]
+    await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+    logging.info("Telegram bot command menu registered successfully.")
+
     if WEBHOOK_URL:
         webhook_path = f"{WEBHOOK_URL}/webhook/telegram"
         await bot.set_webhook(webhook_path)
@@ -46,7 +62,7 @@ def main():
     
     app.router.add_get("/", handle_ping)
     
-    # দুটো পাথই চালু রাখা হলো যাতে যেকোনো লিংক দিলেই কাজ করে
+    # Webhook এন্ডিং রাউট
     app.router.add_get("/webhook", handle_herosms_webhook)
     app.router.add_post("/webhook", handle_herosms_webhook)
     app.router.add_get("/herosms_webhook", handle_herosms_webhook)
