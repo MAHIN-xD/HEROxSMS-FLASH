@@ -1,8 +1,10 @@
 import aiohttp
 import json
 import logging
+from datetime import datetime, timezone
 
 BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
+V1_BASE_URL = "https://hero-sms.com/api/v1"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -28,6 +30,24 @@ class HeroSMSClient:
                         return text.strip()
         except Exception as e:
             logging.error(f"API Error ({action}): {e}")
+            return None
+
+    async def _get_v1(self, endpoint: str, **kwargs):
+        """HeroSMS v1 REST API মেথড (ApiKey হেডার সাপোর্টসহ)"""
+        url = f"{V1_BASE_URL}/{endpoint.lstrip('/')}"
+        headers = dict(HEADERS)
+        headers["Authorization"] = f"ApiKey {self.api_key}"
+        try:
+            timeout = aiohttp.ClientTimeout(total=15)
+            async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+                async with session.get(url, params=kwargs) as response:
+                    text = await response.text()
+                    try:
+                        return json.loads(text)
+                    except json.JSONDecodeError:
+                        return text.strip()
+        except Exception as e:
+            logging.error(f"V1 API Error ({endpoint}): {e}")
             return None
 
     async def get_balance(self):
@@ -67,14 +87,12 @@ class HeroSMSClient:
         if max_price: 
             params["maxPrice"] = max_price
         
-        # বাদ দেওয়ার জন্য প্রিফিক্স ফরম্যাট করা
         if phone_exception:
             if isinstance(phone_exception, (list, tuple)):
                 params["phoneException"] = ",".join(str(p).strip().lstrip("+") for p in phone_exception)
             else:
                 params["phoneException"] = str(phone_exception).strip().lstrip("+")
 
-        # অপারেটর ফিল্টার যুক্ত করা
         if operator and str(operator).lower() != "any":
             params["operator"] = str(operator).strip().lower()
 
@@ -106,3 +124,25 @@ class HeroSMSClient:
 
     async def get_active_activations(self):
         return await self._get("getActiveActivations")
+
+    # --- নতুন যুক্ত করা এন্ডপয়েন্টস ---
+    async def get_all_sms(self, activation_id: str):
+        """?action=getAllSms মেথড (একটি অ্যাক্টিভেশনের সব ওটিপি)"""
+        return await self._get("getAllSms", id=str(activation_id))
+
+    async def get_history(self, size: int = 10, offset: int = 0, start: int = None, end: int = None):
+        """?action=getHistory মেথড"""
+        params = {"size": size, "offset": offset}
+        if start: params["start"] = start
+        if end: params["end"] = end
+        return await self._get("getHistory", **params)
+
+    async def get_stats(self, date_str: str = None):
+        """/activations/stats মেথড (সাকসেস রেট ও কাউন্ট)"""
+        if not date_str:
+            date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        return await self._get_v1("activations/stats", date=date_str)
+
+    async def get_activations_history(self, from_date: str, to_date: str, size: int = 15):
+        """/activations/history মেথড (টোটাল খরচ ও সফলতার সামারি)"""
+        return await self._get_v1("activations/history", **{"from": from_date, "to": to_date, "size": size})
