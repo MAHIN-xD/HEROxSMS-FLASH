@@ -3,6 +3,7 @@ import logging
 import html
 import time
 import re
+from datetime import datetime, timezone, timedelta
 from aiohttp import web
 from aiogram import Router, F
 from aiogram.enums import ParseMode
@@ -41,8 +42,9 @@ def format_otp_text(phone: str, code: str) -> str:
     return (
         f"📱 Number: +{safe_phone}\n"
         f"🔑 OTP: <code>{safe_code}</code> | <b>MAH!N</b>\n\n"
-        f"ℹ️ <i>কোড ভুল হলে বা পুনরায় ওটিপি চাইতে লিখুন:</i>\n"
-        f"<code>/retry {safe_phone}</code>"
+        f"ℹ️ <i>কোড ভুল হলে পুনরায় ওটিপি চাইতে:</i>\n"
+        f"<code>/retry {safe_phone}</code>\n"
+        f"📜 <i>সব এসএমএস দেখতে:</i> <code>/getallsms {safe_phone}</code>"
     )
 
 async def get_excluded_prefixes_str() -> str:
@@ -57,7 +59,6 @@ async def get_preferred_operator_str() -> str:
         return DEFAULT_OPERATOR
     return str(saved)
 
-# SQLite Row এর সাথে সম্পূর্ণ কম্প্যাটিবল সেফ ইউজার ভ্যালিডেশন
 async def get_valid_user_client(user_id: int):
     user = await db.get_user(user_id)
     if not user:
@@ -81,7 +82,7 @@ async def is_allowed(user_id: int) -> bool:
     if maintenance == "1": return False
     return True
 
-# --- HeroSMS অফিশিয়াল Webhook হ্যান্ডলার ---
+# --- Webhook Handler ---
 async def handle_herosms_webhook(request: web.Request):
     try:
         if request.can_read_body:
@@ -167,7 +168,6 @@ async def cmd_start(message: Message, state: FSMContext):
 @router.message(BotStates.waiting_for_api_key)
 async def process_api_key(message: Message, state: FSMContext):
     text = message.text.strip()
-    
     if text in MENU_BUTTONS:
         await state.clear()
         return await message.answer("Action cancelled. Please try again.")
@@ -281,6 +281,7 @@ async def cb_buy_number(callback: CallbackQuery):
     text = f"Number Purchased!\n\nNumber: +{phone}\nID: {aid}\n\nWaiting for OTP via Webhook..."
     await callback.message.edit_text(text, reply_markup=kb.number_action_menu(aid))
 
+# --- /retry কমান্ড ---
 @router.message(Command("retry"))
 async def cmd_retry_number(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -324,11 +325,247 @@ async def cmd_retry_number(message: Message):
             f"🔄 <b>রি-ট্রাই মোড সক্রিয় হয়েছে!</b>\n\n"
             f"📱 নম্বর: <code>+{phone_num}</code>\n"
             f"🆔 ID: <code>{aid_to_retry}</code>\n\n"
-            f"👉 টেলিগ্রাম অ্যাপ থেকে <b>'Resend SMS'</b> দিন। নতুন কোড আসামাত্রই বট অটো ইনবক্সে দিয়ে দেবে।"
+            f"👉 টেলিগ্রাম থেকে <b>'Resend SMS'</b> দিন। নতুন কোড আসামাত্রই বট অটো ইনবক্সে দিয়ে দেবে।"
         )
     else:
         err = retry_res.get("title", str(retry_res)) if isinstance(retry_res, dict) else str(retry_res)
         await message.answer(f"❌ রি-ট্রাই করা যায়নি: {html.escape(str(err))}\n(নম্বরটির মেয়াদ শেষ বা বাতিল হয়ে থাকতে পারে)")
+
+# --- নতুন যুক্ত করা কমান্ড: /getallsms ---
+@router.message(Command("getallsms", "allsms"))
+async def cmd_get_all_sms(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    user, client = await get_valid_user_client(message.from_user.id)
+    if not user:
+        await message.answer("Please send your HeroSMS API Key first.")
+        return
+    
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("⚠️ ব্যবহার নিয়ম: <code>/getallsms &lt;Activation_ID বা ফোন নম্বর&gt;</code>\nউদাহরণ: <code>/getallsms 12345678</code>")
+        return
+
+    target = args[1].replace("+", "").strip()
+    aid = target
+
+    res_active = await client.get_active_activations()
+    if isinstance(res_active, dict) and res_active.get("status") == "success":
+        for act in res_active.get("data", []):
+            if str(act.get("phoneNumber")) == target or str(act.get("activationId")) == target:
+                aid = str(act.get("activationId"))
+                break
+
+    msg = await message.answer("🔍 সব ওটিপি লোড হচ্ছে...")
+    res = await client.get_all_sms(aid)
+
+    if not res or not isinstance(res, dict):
+        err = str(res) if res else "No response"
+        await msg.edit_text(f"❌ ওটিপি লোড করা যায়নি: {html.escape(err)}")
+        return
+
+    sms_list = res.get("data", [])
+    meta = res.get("meta", {})
+    total = meta.get("total", len(sms_list))
+
+    if not sms_list:
+        await msg.edit_text(f"ℹ️ ID: <code>{aid}</code>-এ কোনো ওটিপি পাওয়া যায়নি।")
+        return
+
+    lines = [f"📬 <b>সব ওটিপির তালিকা (মোট: {total} টি):</b>\n"]
+    for idx, item in enumerate(sms_list, 1):
+        sender = html.escape(str(item.get("phoneFrom") or "System"))
+        code = html.escape(str(item.get("code") or "N/A"))
+        text_body = html.escape(str(item.get("text") or ""))
+        time_str = html.escape(str(item.get("date") or ""))
+        v_type = html.escape(str(item.get("type") or "sms"))
+
+        lines.append(
+            f"<b>#{idx}</b> [{v_type.upper()}] প্রেরক: <code>{sender}</code>\n"
+            f"🔑 কোড: <code>{code}</code>\n"
+            f"💬 মেসেজ: {text_body}\n"
+            f"🕒 সময়: {time_str}\n"
+        )
+
+    final_text = "\n".join(lines)
+    if len(final_text) > 4000:
+        final_text = final_text[:3990] + "..."
+    await msg.edit_text(final_text, parse_mode=ParseMode.HTML)
+
+# --- নতুন যুক্ত করা কমান্ড: /stats ---
+@router.message(Command("stats", "statistics"))
+async def cmd_stats(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    user, client = await get_valid_user_client(message.from_user.id)
+    if not user:
+        await message.answer("Please send your HeroSMS API Key first.")
+        return
+
+    args = message.text.split()
+    date_arg = args[1].strip() if len(args) >= 2 else None
+
+    msg = await message.answer("📊 পরিসংখ্যান লোড হচ্ছে...")
+    res = await client.get_stats(date_arg)
+
+    if not res or not isinstance(res, dict) or "data" not in res:
+        err = res.get("details") or res.get("title") or str(res) if isinstance(res, dict) else str(res)
+        await msg.edit_text(f"❌ স্ট্যাটাস পাওয়া যায়নি: {html.escape(str(err))}")
+        return
+
+    data = res.get("data", {})
+    if not data or not isinstance(data, dict):
+        await msg.edit_text("ℹ️ নির্বাচিত তারিখের জন্য কোনো পরিসংখ্যান নেই।")
+        return
+
+    display_date = date_arg or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    lines = [f"📊 <b>HeroSMS লাইভ পরিসংখ্যান ({display_date}):</b>\n"]
+
+    total_purchased = 0
+    total_success = 0
+    has_warning = False
+
+    for country_key, services in data.items():
+        if isinstance(services, dict):
+            for service_name, s_data in services.items():
+                if isinstance(s_data, dict):
+                    c_count = s_data.get("count", 0)
+                    c_success = s_data.get("success", 0)
+                    c_percent = float(s_data.get("percent", 0.0))
+
+                    total_purchased += c_count
+                    total_success += c_success
+
+                    status_icon = "🟢" if c_percent >= 6.0 else "🔴"
+                    if c_percent < 6.0 and c_count >= 10:
+                        has_warning = True
+
+                    lines.append(
+                        f"{status_icon} <b>দেশ ID: {country_key} | সার্ভিস: {service_name.upper()}</b>\n"
+                        f"   • মোট ক্রয়: <code>{c_count}</code>\n"
+                        f"   • সফল ওটিপি: <code>{c_success}</code>\n"
+                        f"   • সাকসেস রেট: <b>{c_percent:.1f}%</b>\n"
+                    )
+
+    overall_rate = (total_success / total_purchased * 100) if total_purchased > 0 else 0.0
+    lines.append(
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📈 <b>সারসংক্ষেপ:</b>\n"
+        f"• মোট কেনা নম্বর: <code>{total_purchased}</code>\n"
+        f"• মোট সফল ওটিপি: <code>{total_success}</code>\n"
+        f"• গড় সফলতার হার: <b>{overall_rate:.1f}%</b>\n"
+    )
+
+    if has_warning or (total_purchased >= 10 and overall_rate < 6.0):
+        lines.append("⚠️ <b>সতর্কতা:</b> সাকসেস রেট ৬%-এর নিচে! অ্যাকাউন্ট ব্যান এড়াতে অন্য দেশ ব্যবহার করুন বা /exclude দিন।")
+    else:
+        lines.append("✅ আপনার সাকসেস রেট নিরাপদ সীমার ভেতরে আছে।")
+
+    lines.append("\n<i>* প্রতিদিন ২১:০০ UTC-তে এই হিসাব রিসেট হয়।</i>")
+    await msg.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+# --- নতুন যুক্ত করা কমান্ড: /history ---
+@router.message(Command("history"))
+async def cmd_history(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    user, client = await get_valid_user_client(message.from_user.id)
+    if not user:
+        await message.answer("Please send your HeroSMS API Key first.")
+        return
+
+    args = message.text.split()
+    limit = 10
+    if len(args) >= 2 and args[1].isdigit():
+        limit = min(int(args[1]), 30)
+
+    msg = await message.answer("📜 হিস্ট্রি লোড হচ্ছে...")
+    res = await client.get_history(size=limit)
+
+    if not res or not isinstance(res, list):
+        err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
+        await msg.edit_text(f"❌ হিস্ট্রি পাওয়া যায়নি: {html.escape(str(err))}")
+        return
+
+    if not res:
+        await msg.edit_text("ℹ️ কোনো অ্যাক্টিভেশন হিস্ট্রি পাওয়া যায়নি।")
+        return
+
+    lines = [f"📜 <b>সর্বশেষ {len(res)}টি অ্যাক্টিভেশন হিস্ট্রি:</b>\n"]
+    for idx, item in enumerate(res, 1):
+        phone = html.escape(str(item.get("phone", "Unknown")))
+        cost = item.get("cost", 0)
+        status_code = str(item.get("status", ""))
+        date_str = html.escape(str(item.get("date", "")))
+        sms_code = html.escape(str(item.get("sms", "কোনো ওটিপি নেই")))
+
+        status_label = "✅ সফল" if status_code in ["4", "6"] else ("❌ বাতিল" if status_code == "8" else f"স্ট্যাটাস: {status_code}")
+
+        lines.append(
+            f"<b>#{idx}</b> 📱 <code>+{phone}</code>\n"
+            f"   • ওটিপি: <code>{sms_code}</code>\n"
+            f"   • খরচ: {cost} USD | অবস্থা: {status_label}\n"
+            f"   • তারিখ: {date_str}\n"
+        )
+
+    lines.append("<i>বিগত ৭ দিনের বিস্তারিত রিপোর্ট দেখতে লিখুন: /act_history</i>")
+    final_text = "\n".join(lines)
+    if len(final_text) > 4000:
+        final_text = final_text[:3990] + "..."
+    await msg.edit_text(final_text, parse_mode=ParseMode.HTML)
+
+# --- নতুন যুক্ত করা কমান্ড: /activations_history ---
+@router.message(Command("activations_history", "act_history"))
+async def cmd_activations_history(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    user, client = await get_valid_user_client(message.from_user.id)
+    if not user:
+        await message.answer("Please send your HeroSMS API Key first.")
+        return
+
+    now = datetime.now(timezone.utc)
+    to_date = now.strftime("%Y-%m-%d")
+    from_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    msg = await message.answer("📊 বিগত ৭ দিনের বিস্তারিত হিস্ট্রি লোড হচ্ছে...")
+    res = await client.get_activations_history(from_date=from_date, to_date=to_date, size=15)
+
+    if not res or not isinstance(res, dict) or "data" not in res:
+        res_legacy = await client.get_history(size=10)
+        if isinstance(res_legacy, list) and res_legacy:
+            return await cmd_history(message)
+        err = res.get("details") or res.get("title") or str(res) if isinstance(res, dict) else str(res)
+        await msg.edit_text(f"❌ হিস্ট্রি লোড করা যায়নি: {html.escape(str(err))}")
+        return
+
+    totals = res.get("totals", [])
+    total_sum = 0.0
+    total_success_count = 0
+    if totals and isinstance(totals, list) and isinstance(totals[0], dict):
+        total_sum = float(totals[0].get("sum", 0.0))
+        total_success_count = int(totals[0].get("successCount", 0))
+
+    items = res.get("data", [])
+    lines = [
+        f"📊 <b>অ্যাক্টিভেশন রিপোর্ট ({from_date} হতে {to_date}):</b>\n",
+        f"💰 মোট খরচ: <b>{total_sum:.4f} USD</b>",
+        f"🎯 মোট সফল অ্যাক্টিভেশন: <b>{total_success_count} টি</b>\n",
+        "━━━━━━━━━━━━━━━━━━\n"
+    ]
+
+    for idx, item in enumerate(items[:10], 1):
+        phone = html.escape(str(item.get("phone", "Unknown")))
+        cost = item.get("cost", 0)
+        date_str = html.escape(str(item.get("createDate", "")))
+        codes = html.escape(str(item.get("moreCodes", "None")))
+
+        lines.append(
+            f"<b>#{idx}</b> <code>+{phone}</code> | {cost} USD\n"
+            f"   • কোড: <code>{codes}</code>\n"
+            f"   • তারিখ: {date_str}\n"
+        )
+
+    final_text = "\n".join(lines)
+    if len(final_text) > 4000:
+        final_text = final_text[:3990] + "..."
+    await msg.edit_text(final_text, parse_mode=ParseMode.HTML)
 
 @router.message(Command("cancel"))
 async def cmd_cancel_number(message: Message):
