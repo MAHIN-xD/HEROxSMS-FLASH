@@ -18,11 +18,15 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
 async def on_startup(bot: Bot):
     await db.init_db()
     
-    # টেলিগ্রামে '/' চাপলে যে কমান্ড লিস্ট পপ-আপ হবে
+    # টেলিগ্রামে '/' চাপলে যে পূর্ণাঙ্গ কমান্ড মেনু পপ-আপ হবে
     commands = [
-        BotCommand(command="start", description="বট শুরু করুন / প্রধান মেনু"),
-        BotCommand(command="cancel", description="চলমান নম্বর বাতিল করুন (/cancel <নম্বর/ID>)"),
+        BotCommand(command="start", description="বট শুরু করুন / মেনু দেখুন"),
+        BotCommand(command="stats", description="আজকের সাকসেস রেট ও পরিসংখ্যান দেখুন"),
+        BotCommand(command="getallsms", description="সবগুলো ওটিপি দেখুন (/getallsms <ID/নম্বর>)"),
+        BotCommand(command="history", description="সাম্প্রতিক অ্যাক্টিভেশন হিস্ট্রি দেখুন"),
+        BotCommand(command="act_history", description="বিগত ৭ দিনের মোট খরচ ও সামারি রিপোর্ট"),
         BotCommand(command="retry", description="কোড পুনরায় চাইতে (/retry <নম্বর/ID>)"),
+        BotCommand(command="cancel", description="চলমান নম্বর বাতিল করুন (/cancel <নম্বর/ID>)"),
         BotCommand(command="exclude", description="প্রিফিক্স ব্লকলিস্টে যোগ করুন (/exclude 57300)"),
         BotCommand(command="unexclude", description="প্রিফিক্স ব্লকলিস্ট থেকে সরান (/unexclude 57350)"),
         BotCommand(command="exclude_list", description="বাদ থাকা প্রিফিক্স তালিকা দেখুন"),
@@ -62,7 +66,7 @@ def main():
     
     app.router.add_get("/", handle_ping)
     
-    # Webhook এন্ডিং রাউট
+    # HeroSMS Webhook এন্ডিং রাউট
     app.router.add_get("/webhook", handle_herosms_webhook)
     app.router.add_post("/webhook", handle_herosms_webhook)
     app.router.add_get("/herosms_webhook", handle_herosms_webhook)
