@@ -8,27 +8,33 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 import database as db
-from handlers import router, handle_herosms_webhook, get_bot_instance, set_bot_instance
+from handlers import router, handle_herosms_webhook, set_bot_instance
 
-TOKEN = os.getenv("BOT_TOKEN", "8202597792:AAFO7lRfZXwBzQuvkiO4CBBegFiluI9dMz0")
+# টোকেন Environment থেকে আসবে, কোনো হার্ডকোডেড টোকেন থাকবে না
+TOKEN = os.getenv("BOT_TOKEN")
 PORT  = int(os.getenv("PORT", 8080))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
-
+# শেষে স্ল্যাশ থাকলে তা কেটে ফেলা হবে
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
 
 async def on_startup(bot: Bot):
     await db.init_db()
     if WEBHOOK_URL:
-        await bot.set_webhook(f"{WEBHOOK_URL}/webhook/telegram")
+        webhook_path = f"{WEBHOOK_URL}/webhook/telegram"
+        await bot.set_webhook(webhook_path)
+        logging.info(f"Telegram webhook set to: {webhook_path}")
     else:
         await bot.delete_webhook(drop_pending_updates=True)
+        logging.info("Running in polling mode, deleted webhooks")
 
 async def handle_ping(request):
     return web.Response(text="Bot is alive!")
 
 def main():
+    if not TOKEN:
+        raise ValueError("BOT_TOKEN environment variable is missing!")
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    # Changed parse_mode to HTML to prevent markdown parsing errors with API keys
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
     set_bot_instance(bot)
     
@@ -39,6 +45,10 @@ def main():
     app = web.Application()
     
     app.router.add_get("/", handle_ping)
+    
+    # দুটো পাথই চালু রাখা হলো যাতে যেকোনো লিংক দিলেই কাজ করে
+    app.router.add_get("/webhook", handle_herosms_webhook)
+    app.router.add_post("/webhook", handle_herosms_webhook)
     app.router.add_get("/herosms_webhook", handle_herosms_webhook)
     app.router.add_post("/herosms_webhook", handle_herosms_webhook)
 
@@ -49,7 +59,7 @@ def main():
         ).register(app, path="/webhook/telegram")
         setup_application(app, dp, bot=bot)
         
-        logging.info(f"Starting web server on port {PORT} with webhook")
+        logging.info(f"Starting web server on port {PORT} with Telegram Webhook")
         web.run_app(app, host="0.0.0.0", port=PORT)
     else:
         async def start_polling_and_server():
@@ -57,7 +67,7 @@ def main():
             await runner.setup()
             site = web.TCPSite(runner, "0.0.0.0", PORT)
             await site.start()
-            logging.info(f"Web server running on port {PORT} (HeroSMS Webhook active)")
+            logging.info(f"Web server running on port {PORT} (HeroSMS Webhook active, Telegram Polling active)")
             
             await bot.delete_webhook(drop_pending_updates=True)
             await dp.start_polling(bot)
