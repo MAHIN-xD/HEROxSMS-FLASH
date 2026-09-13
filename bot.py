@@ -18,25 +18,24 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
 async def on_startup(bot: Bot):
     await db.init_db()
     
-    # টেলিগ্রামে '/' চাপলে যে পূর্ণাঙ্গ কমান্ড মেনু পপ-আপ হবে
     commands = [
-        BotCommand(command="start", description="বট শুরু করুন / মেনু দেখুন"),
-        BotCommand(command="stats", description="আজকের সাকসেস রেট ও পরিসংখ্যান দেখুন"),
-        BotCommand(command="getallsms", description="সবগুলো ওটিপি দেখুন (/getallsms <ID/নম্বর>)"),
-        BotCommand(command="history", description="সাম্প্রতিক অ্যাক্টিভেশন হিস্ট্রি দেখুন"),
-        BotCommand(command="act_history", description="বিগত ৭ দিনের মোট খরচ ও সামারি রিপোর্ট"),
-        BotCommand(command="retry", description="কোড পুনরায় চাইতে (/retry <নম্বর/ID>)"),
-        BotCommand(command="cancel", description="চলমান নম্বর বাতিল করুন (/cancel <নম্বর/ID>)"),
-        BotCommand(command="exclude", description="প্রিফিক্স ব্লকলিস্টে যোগ করুন (/exclude 57300)"),
-        BotCommand(command="unexclude", description="প্রিফিক্স ব্লকলিস্ট থেকে সরান (/unexclude 57350)"),
-        BotCommand(command="exclude_list", description="বাদ থাকা প্রিফিক্স তালিকা দেখুন"),
-        BotCommand(command="reset_exclude", description="ব্লকলিস্ট রিসেট করে ডিফল্ট 57350 করুন"),
-        BotCommand(command="operator", description="অপারেটর সেট করুন (/operator claro,tigo বা any)"),
-        BotCommand(command="operator_list", description="বর্তমান অপারেটর দেখুন"),
-        BotCommand(command="reset_operator", description="অপারেটর রিসেট করে any করুন"),
+        BotCommand(command="start", description="Start bot / Main menu"),
+        BotCommand(command="stats", description="View today stats (/stats [date])"),
+        BotCommand(command="getallsms", description="View all SMS (/getallsms <ID/Number>)"),
+        BotCommand(command="history", description="View recent activations"),
+        BotCommand(command="act_history", description="7-day report and spend summary"),
+        BotCommand(command="retry", description="Wait for second SMS (/retry <Number/ID>)"),
+        BotCommand(command="cancel", description="Cancel active number (/cancel <Number/ID>)"),
+        BotCommand(command="exclude", description="Add prefix to blacklist (/exclude 57300)"),
+        BotCommand(command="unexclude", description="Remove prefix from blacklist (/unexclude 57350)"),
+        BotCommand(command="exclude_list", description="View blacklisted prefixes"),
+        BotCommand(command="reset_exclude", description="Reset blacklist to default 57350"),
+        BotCommand(command="operator", description="Set operator (/operator claro,tigo or any)"),
+        BotCommand(command="operator_list", description="View current operator"),
+        BotCommand(command="reset_operator", description="Reset operator to any"),
     ]
     await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
-    logging.info("Telegram bot command menu registered successfully.")
+    logging.info("Telegram bot command menu registered.")
 
     if WEBHOOK_URL:
         webhook_path = f"{WEBHOOK_URL}/webhook/telegram"
@@ -66,7 +65,6 @@ def main():
     
     app.router.add_get("/", handle_ping)
     
-    # HeroSMS Webhook এন্ডিং রাউট
     app.router.add_get("/webhook", handle_herosms_webhook)
     app.router.add_post("/webhook", handle_herosms_webhook)
     app.router.add_get("/herosms_webhook", handle_herosms_webhook)
