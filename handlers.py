@@ -39,13 +39,7 @@ MENU_BUTTONS = ["Buy Telegram Number", "Bulk Buy Numbers", "Active Numbers", "Ba
 def format_otp_text(phone: str, code: str) -> str:
     safe_phone = html.escape(str(phone))
     safe_code = html.escape(str(code))
-    return (
-        f"📱 Number: +{safe_phone}\n"
-        f"🔑 OTP: <code>{safe_code}</code> | <b>MAH!N</b>\n\n"
-        f"ℹ️ <i>কোড ভুল হলে পুনরায় ওটিপি চাইতে:</i>\n"
-        f"<code>/retry {safe_phone}</code>\n"
-        f"📜 <i>সব এসএমএস দেখতে:</i> <code>/getallsms {safe_phone}</code>"
-    )
+    return f"Number: +{safe_phone}\nOTP: {safe_code} | <b>MAH!N</b>"
 
 async def get_excluded_prefixes_str() -> str:
     saved = await db.get_setting("excluded_prefixes")
@@ -278,7 +272,7 @@ async def cb_buy_number(callback: CallbackQuery):
     phone = res.get("phoneNumber", "Unknown")
 
     await db.save_activation(aid, callback.from_user.id, phone)
-    text = f"Number Purchased!\n\nNumber: +{phone}\nID: {aid}\n\nWaiting for OTP via Webhook..."
+    text = f"Number Purchased!\n\nNumber: +{phone}\nID: {aid}\n\nWaiting for OTP..."
     await callback.message.edit_text(text, reply_markup=kb.number_action_menu(aid))
 
 # --- /retry কমান্ড ---
@@ -287,7 +281,7 @@ async def cmd_retry_number(message: Message):
     if not await is_allowed(message.from_user.id): return
     args = message.text.split()
     if len(args) < 2:
-        await message.answer("⚠️ ব্যবহার নিয়ম: <code>/retry +573...</code> বা <code>/retry 12345678</code>")
+        await message.answer("Usage: /retry +573... or /retry 12345678")
         return
 
     target = args[1].replace("+", "").strip()
@@ -322,16 +316,16 @@ async def cmd_retry_number(message: Message):
         retry_res.startswith("ACCESS_ACTIVATION")
     ):
         await message.answer(
-            f"🔄 <b>রি-ট্রাই মোড সক্রিয় হয়েছে!</b>\n\n"
-            f"📱 নম্বর: <code>+{phone_num}</code>\n"
-            f"🆔 ID: <code>{aid_to_retry}</code>\n\n"
-            f"👉 টেলিগ্রাম থেকে <b>'Resend SMS'</b> দিন। নতুন কোড আসামাত্রই বট অটো ইনবক্সে দিয়ে দেবে।"
+            f"Retry mode activated.\n\n"
+            f"Number: +{phone_num}\n"
+            f"ID: {aid_to_retry}\n\n"
+            f"Please click 'Resend SMS' in Telegram. New code will be delivered automatically."
         )
     else:
         err = retry_res.get("title", str(retry_res)) if isinstance(retry_res, dict) else str(retry_res)
-        await message.answer(f"❌ রি-ট্রাই করা যায়নি: {html.escape(str(err))}\n(নম্বরটির মেয়াদ শেষ বা বাতিল হয়ে থাকতে পারে)")
+        await message.answer(f"Failed to retry: {html.escape(str(err))}\n(Number might be cancelled or expired)")
 
-# --- নতুন যুক্ত করা কমান্ড: /getallsms ---
+# --- /getallsms কমান্ড ---
 @router.message(Command("getallsms", "allsms"))
 async def cmd_get_all_sms(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -342,7 +336,7 @@ async def cmd_get_all_sms(message: Message):
     
     args = message.text.split()
     if len(args) < 2:
-        await message.answer("⚠️ ব্যবহার নিয়ম: <code>/getallsms &lt;Activation_ID বা ফোন নম্বর&gt;</code>\nউদাহরণ: <code>/getallsms 12345678</code>")
+        await message.answer("Usage: /getallsms <Activation_ID or Phone>\nExample: /getallsms 12345678")
         return
 
     target = args[1].replace("+", "").strip()
@@ -355,12 +349,12 @@ async def cmd_get_all_sms(message: Message):
                 aid = str(act.get("activationId"))
                 break
 
-    msg = await message.answer("🔍 সব ওটিপি লোড হচ্ছে...")
+    msg = await message.answer("Loading all SMS...")
     res = await client.get_all_sms(aid)
 
     if not res or not isinstance(res, dict):
         err = str(res) if res else "No response"
-        await msg.edit_text(f"❌ ওটিপি লোড করা যায়নি: {html.escape(err)}")
+        await msg.edit_text(f"Could not load SMS: {html.escape(err)}")
         return
 
     sms_list = res.get("data", [])
@@ -368,10 +362,10 @@ async def cmd_get_all_sms(message: Message):
     total = meta.get("total", len(sms_list))
 
     if not sms_list:
-        await msg.edit_text(f"ℹ️ ID: <code>{aid}</code>-এ কোনো ওটিপি পাওয়া যায়নি।")
+        await msg.edit_text(f"No SMS found for ID: {aid}")
         return
 
-    lines = [f"📬 <b>সব ওটিপির তালিকা (মোট: {total} টি):</b>\n"]
+    lines = [f"All SMS List (Total: {total}):\n"]
     for idx, item in enumerate(sms_list, 1):
         sender = html.escape(str(item.get("phoneFrom") or "System"))
         code = html.escape(str(item.get("code") or "N/A"))
@@ -380,10 +374,10 @@ async def cmd_get_all_sms(message: Message):
         v_type = html.escape(str(item.get("type") or "sms"))
 
         lines.append(
-            f"<b>#{idx}</b> [{v_type.upper()}] প্রেরক: <code>{sender}</code>\n"
-            f"🔑 কোড: <code>{code}</code>\n"
-            f"💬 মেসেজ: {text_body}\n"
-            f"🕒 সময়: {time_str}\n"
+            f"#{idx} [{v_type.upper()}] From: {sender}\n"
+            f"Code: {code}\n"
+            f"Message: {text_body}\n"
+            f"Date: {time_str}\n"
         )
 
     final_text = "\n".join(lines)
@@ -391,7 +385,7 @@ async def cmd_get_all_sms(message: Message):
         final_text = final_text[:3990] + "..."
     await msg.edit_text(final_text, parse_mode=ParseMode.HTML)
 
-# --- নতুন যুক্ত করা কমান্ড: /stats ---
+# --- /stats কমান্ড ---
 @router.message(Command("stats", "statistics"))
 async def cmd_stats(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -403,21 +397,21 @@ async def cmd_stats(message: Message):
     args = message.text.split()
     date_arg = args[1].strip() if len(args) >= 2 else None
 
-    msg = await message.answer("📊 পরিসংখ্যান লোড হচ্ছে...")
+    msg = await message.answer("Loading statistics...")
     res = await client.get_stats(date_arg)
 
     if not res or not isinstance(res, dict) or "data" not in res:
         err = res.get("details") or res.get("title") or str(res) if isinstance(res, dict) else str(res)
-        await msg.edit_text(f"❌ স্ট্যাটাস পাওয়া যায়নি: {html.escape(str(err))}")
+        await msg.edit_text(f"Stats not found: {html.escape(str(err))}")
         return
 
     data = res.get("data", {})
     if not data or not isinstance(data, dict):
-        await msg.edit_text("ℹ️ নির্বাচিত তারিখের জন্য কোনো পরিসংখ্যান নেই।")
+        await msg.edit_text("No statistics found for the selected date.")
         return
 
     display_date = date_arg or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    lines = [f"📊 <b>HeroSMS লাইভ পরিসংখ্যান ({display_date}):</b>\n"]
+    lines = [f"HeroSMS Live Stats ({display_date}):\n"]
 
     total_purchased = 0
     total_success = 0
@@ -434,35 +428,34 @@ async def cmd_stats(message: Message):
                     total_purchased += c_count
                     total_success += c_success
 
-                    status_icon = "🟢" if c_percent >= 6.0 else "🔴"
                     if c_percent < 6.0 and c_count >= 10:
                         has_warning = True
 
                     lines.append(
-                        f"{status_icon} <b>দেশ ID: {country_key} | সার্ভিস: {service_name.upper()}</b>\n"
-                        f"   • মোট ক্রয়: <code>{c_count}</code>\n"
-                        f"   • সফল ওটিপি: <code>{c_success}</code>\n"
-                        f"   • সাকসেস রেট: <b>{c_percent:.1f}%</b>\n"
+                        f"Country ID: {country_key} | Service: {service_name.upper()}\n"
+                        f"- Total: {c_count}\n"
+                        f"- Success: {c_success}\n"
+                        f"- Rate: {c_percent:.1f}%\n"
                     )
 
     overall_rate = (total_success / total_purchased * 100) if total_purchased > 0 else 0.0
     lines.append(
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"📈 <b>সারসংক্ষেপ:</b>\n"
-        f"• মোট কেনা নম্বর: <code>{total_purchased}</code>\n"
-        f"• মোট সফল ওটিপি: <code>{total_success}</code>\n"
-        f"• গড় সফলতার হার: <b>{overall_rate:.1f}%</b>\n"
+        f"-------------------\n"
+        f"Summary:\n"
+        f"- Total Numbers: {total_purchased}\n"
+        f"- Total Success: {total_success}\n"
+        f"- Average Success Rate: {overall_rate:.1f}%\n"
     )
 
     if has_warning or (total_purchased >= 10 and overall_rate < 6.0):
-        lines.append("⚠️ <b>সতর্কতা:</b> সাকসেস রেট ৬%-এর নিচে! অ্যাকাউন্ট ব্যান এড়াতে অন্য দেশ ব্যবহার করুন বা /exclude দিন।")
+        lines.append("Warning: Success rate is below 6%! Use /exclude or change country to prevent account ban.")
     else:
-        lines.append("✅ আপনার সাকসেস রেট নিরাপদ সীমার ভেতরে আছে।")
+        lines.append("Success rate is within safe range.")
 
-    lines.append("\n<i>* প্রতিদিন ২১:০০ UTC-তে এই হিসাব রিসেট হয়।</i>")
+    lines.append("\n(Stats reset daily at 21:00 UTC)")
     await msg.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
-# --- নতুন যুক্ত করা কমান্ড: /history ---
+# --- /history কমান্ড ---
 @router.message(Command("history"))
 async def cmd_history(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -476,42 +469,42 @@ async def cmd_history(message: Message):
     if len(args) >= 2 and args[1].isdigit():
         limit = min(int(args[1]), 30)
 
-    msg = await message.answer("📜 হিস্ট্রি লোড হচ্ছে...")
+    msg = await message.answer("Loading history...")
     res = await client.get_history(size=limit)
 
     if not res or not isinstance(res, list):
         err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
-        await msg.edit_text(f"❌ হিস্ট্রি পাওয়া যায়নি: {html.escape(str(err))}")
+        await msg.edit_text(f"History not found: {html.escape(str(err))}")
         return
 
     if not res:
-        await msg.edit_text("ℹ️ কোনো অ্যাক্টিভেশন হিস্ট্রি পাওয়া যায়নি।")
+        await msg.edit_text("No activation history found.")
         return
 
-    lines = [f"📜 <b>সর্বশেষ {len(res)}টি অ্যাক্টিভেশন হিস্ট্রি:</b>\n"]
+    lines = [f"Latest {len(res)} Activations:\n"]
     for idx, item in enumerate(res, 1):
         phone = html.escape(str(item.get("phone", "Unknown")))
         cost = item.get("cost", 0)
         status_code = str(item.get("status", ""))
         date_str = html.escape(str(item.get("date", "")))
-        sms_code = html.escape(str(item.get("sms", "কোনো ওটিপি নেই")))
+        sms_code = html.escape(str(item.get("sms", "None")))
 
-        status_label = "✅ সফল" if status_code in ["4", "6"] else ("❌ বাতিল" if status_code == "8" else f"স্ট্যাটাস: {status_code}")
+        status_label = "Success" if status_code in ["4", "6"] else ("Cancelled" if status_code == "8" else f"Status {status_code}")
 
         lines.append(
-            f"<b>#{idx}</b> 📱 <code>+{phone}</code>\n"
-            f"   • ওটিপি: <code>{sms_code}</code>\n"
-            f"   • খরচ: {cost} USD | অবস্থা: {status_label}\n"
-            f"   • তারিখ: {date_str}\n"
+            f"#{idx} +{phone}\n"
+            f"- OTP: {sms_code}\n"
+            f"- Cost: {cost} USD | Status: {status_label}\n"
+            f"- Date: {date_str}\n"
         )
 
-    lines.append("<i>বিগত ৭ দিনের বিস্তারিত রিপোর্ট দেখতে লিখুন: /act_history</i>")
+    lines.append("Use /act_history to view 7-day total report.")
     final_text = "\n".join(lines)
     if len(final_text) > 4000:
         final_text = final_text[:3990] + "..."
     await msg.edit_text(final_text, parse_mode=ParseMode.HTML)
 
-# --- নতুন যুক্ত করা কমান্ড: /activations_history ---
+# --- /activations_history কমান্ড ---
 @router.message(Command("activations_history", "act_history"))
 async def cmd_activations_history(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -524,7 +517,7 @@ async def cmd_activations_history(message: Message):
     to_date = now.strftime("%Y-%m-%d")
     from_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
 
-    msg = await message.answer("📊 বিগত ৭ দিনের বিস্তারিত হিস্ট্রি লোড হচ্ছে...")
+    msg = await message.answer("Loading 7-day report...")
     res = await client.get_activations_history(from_date=from_date, to_date=to_date, size=15)
 
     if not res or not isinstance(res, dict) or "data" not in res:
@@ -532,7 +525,7 @@ async def cmd_activations_history(message: Message):
         if isinstance(res_legacy, list) and res_legacy:
             return await cmd_history(message)
         err = res.get("details") or res.get("title") or str(res) if isinstance(res, dict) else str(res)
-        await msg.edit_text(f"❌ হিস্ট্রি লোড করা যায়নি: {html.escape(str(err))}")
+        await msg.edit_text(f"Could not load report: {html.escape(str(err))}")
         return
 
     totals = res.get("totals", [])
@@ -544,10 +537,10 @@ async def cmd_activations_history(message: Message):
 
     items = res.get("data", [])
     lines = [
-        f"📊 <b>অ্যাক্টিভেশন রিপোর্ট ({from_date} হতে {to_date}):</b>\n",
-        f"💰 মোট খরচ: <b>{total_sum:.4f} USD</b>",
-        f"🎯 মোট সফল অ্যাক্টিভেশন: <b>{total_success_count} টি</b>\n",
-        "━━━━━━━━━━━━━━━━━━\n"
+        f"Activation Report ({from_date} to {to_date}):\n",
+        f"Total Cost: {total_sum:.4f} USD",
+        f"Total Success: {total_success_count}\n",
+        "-------------------\n"
     ]
 
     for idx, item in enumerate(items[:10], 1):
@@ -557,9 +550,9 @@ async def cmd_activations_history(message: Message):
         codes = html.escape(str(item.get("moreCodes", "None")))
 
         lines.append(
-            f"<b>#{idx}</b> <code>+{phone}</code> | {cost} USD\n"
-            f"   • কোড: <code>{codes}</code>\n"
-            f"   • তারিখ: {date_str}\n"
+            f"#{idx} +{phone} | {cost} USD\n"
+            f"- Code: {codes}\n"
+            f"- Date: {date_str}\n"
         )
 
     final_text = "\n".join(lines)
@@ -639,12 +632,13 @@ async def cb_check_sms(callback: CallbackQuery):
     else:
         await callback.answer("Error checking status.", show_alert=True)
 
+# --- প্রিফিক্স ব্লকলিস্ট কমান্ড ---
 @router.message(Command("exclude", "blacklist"))
 async def cmd_add_exclude(message: Message):
     if not await is_allowed(message.from_user.id): return
     args = message.text.split()
     if len(args) < 2:
-        await message.answer("⚠️ ব্যবহার নিয়ম: <code>/exclude 57300</code> বা <code>/blacklist 57300,57301</code>")
+        await message.answer("Usage: /exclude 57300 or /exclude 57300,57301")
         return
     
     new_items = [p.replace("+", "").strip() for p in args[1].split(",") if p.strip()]
@@ -658,18 +652,18 @@ async def cmd_add_exclude(message: Message):
             added.append(item)
             
     if len(current_list) > 20:
-        await message.answer("⚠️ HeroSMS সর্বোচ্চ ২০টি প্রিফিক্স ব্লকলিস্টের অনুমতি দেয়।")
+        await message.answer("HeroSMS allows a maximum of 20 prefixes in the blacklist.")
         return
 
     await db.set_setting("excluded_prefixes", ",".join(current_list))
-    await message.answer(f"✅ <b>যুক্ত হয়েছে:</b> {', '.join(added)}\n📋 <b>বর্তমান ব্লকলিস্ট:</b> {', '.join(current_list)}")
+    await message.answer(f"Added: {', '.join(added)}\nCurrent Blacklist: {', '.join(current_list)}")
 
 @router.message(Command("unexclude", "whitelist"))
 async def cmd_remove_exclude(message: Message):
     if not await is_allowed(message.from_user.id): return
     args = message.text.split()
     if len(args) < 2:
-        await message.answer("⚠️ ব্যবহার নিয়ম: <code>/unexclude 57350</code>")
+        await message.answer("Usage: /unexclude 57350")
         return
     
     remove_item = args[1].replace("+", "").strip()
@@ -679,9 +673,9 @@ async def cmd_remove_exclude(message: Message):
     if remove_item in current_list:
         current_list.remove(remove_item)
         await db.set_setting("excluded_prefixes", ",".join(current_list))
-        await message.answer(f"✅ <b>{remove_item}</b> সরানো হয়েছে!\n📋 <b>বর্তমান ব্লকলিস্ট:</b> {', '.join(current_list) if current_list else 'খালি'}")
+        await message.answer(f"{remove_item} removed from blacklist.\nCurrent Blacklist: {', '.join(current_list) if current_list else 'Empty'}")
     else:
-        await message.answer(f"ℹ️ {remove_item} ব্লকলিস্টে পাওয়া যায়নি।")
+        await message.answer(f"{remove_item} not found in blacklist.")
 
 @router.message(Command("exclude_list"))
 async def cmd_view_exclude(message: Message):
@@ -690,17 +684,18 @@ async def cmd_view_exclude(message: Message):
     prefixes = current_str.split(",") if current_str else []
     
     if not prefixes:
-        await message.answer("📋 বর্তমানে কোনো প্রিফিক্স ব্লকলিস্টে নেই।")
+        await message.answer("Currently no prefixes are blacklisted.")
     else:
-        formatted = "\n".join(f"• <code>+{p}</code>" for p in prefixes)
-        await message.answer(f"🚫 <b>বর্তমানে বাদ দেওয়া প্রিফিক্স:</b>\n\n{formatted}")
+        formatted = "\n".join(f"- +{p}" for p in prefixes)
+        await message.answer(f"Currently blacklisted prefixes:\n\n{formatted}")
 
 @router.message(Command("reset_exclude"))
 async def cmd_reset_exclude(message: Message):
     if not await is_allowed(message.from_user.id): return
     await db.set_setting("excluded_prefixes", ",".join(DEFAULT_EXCLUDE_LIST))
-    await message.answer(f"🔄 ব্লকলিস্ট রিসেট করা হয়েছে। ডিফল্ট হিসেবে কেবল <b>+{DEFAULT_EXCLUDE_LIST[0]}</b> বাদ থাকবে।")
+    await message.answer(f"Blacklist reset to default: +{DEFAULT_EXCLUDE_LIST[0]}")
 
+# --- অপারেটর কমান্ড ---
 @router.message(Command("operator"))
 async def cmd_set_operator(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -708,29 +703,30 @@ async def cmd_set_operator(message: Message):
     if len(args) < 2:
         current_op = await get_preferred_operator_str()
         await message.answer(
-            f"📶 <b>বর্তমান অপারেটর সেটিং:</b> <code>{current_op}</code>\n\n"
-            f"⚙️ <b>সেট করার নিয়ম:</b>\n"
-            f"• নির্দিষ্ট অপারেটর: <code>/operator claro,tigo</code>\n"
-            f"• ডিফল্ট করতে: <code>/operator any</code> বা <code>/reset_operator</code>"
+            f"Current Operator: {current_op}\n\n"
+            f"Usage:\n"
+            f"- Set operator: /operator claro,tigo\n"
+            f"- Reset: /operator any or /reset_operator"
         )
         return
 
     new_op = args[1].strip().lower()
     await db.set_setting("preferred_operator", new_op)
-    await message.answer(f"✅ পছন্দের অপারেটর সেট করা হয়েছে: <code>{new_op}</code>")
+    await message.answer(f"Preferred operator set to: {new_op}")
 
 @router.message(Command("operator_list"))
 async def cmd_view_operator(message: Message):
     if not await is_allowed(message.from_user.id): return
     current_op = await get_preferred_operator_str()
-    await message.answer(f"📶 বর্তমান অপারেটর সেটিং: <code>{current_op}</code>")
+    await message.answer(f"Current operator setting: {current_op}")
 
 @router.message(Command("reset_operator"))
 async def cmd_reset_operator(message: Message):
     if not await is_allowed(message.from_user.id): return
     await db.set_setting("preferred_operator", DEFAULT_OPERATOR)
-    await message.answer(f"🔄 অপারেটর সেটিং রিসেট করা হয়েছে (Default: <code>{DEFAULT_OPERATOR}</code>)")
+    await message.answer(f"Operator setting reset to default ({DEFAULT_OPERATOR})")
 
+# --- বাল্ক বাই ---
 @router.message(F.text == "Bulk Buy Numbers")
 async def text_bulk_buy(message: Message, state: FSMContext):
     if not await is_allowed(message.from_user.id): return
@@ -801,7 +797,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 
     if purchased:
         lines = "\n".join(f"{n}. +{p}" for n, p in enumerate(purchased, 1))
-        final = f"Bulk Order Completed!\n\nPurchased {len(purchased)} numbers:\n\n{lines}\n\n<i>Waiting for OTPs via Webhook...</i>"
+        final = f"Bulk Order Completed!\n\nPurchased {len(purchased)} numbers:\n\n{lines}\n\nWaiting for OTPs..."
         if len(final) > 4000:
             for part in [final[j:j+4000] for j in range(0, len(final), 4000)]:
                 await message.answer(part, parse_mode=ParseMode.HTML)
