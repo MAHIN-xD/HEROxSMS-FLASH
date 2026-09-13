@@ -1,6 +1,8 @@
 import asyncio
 import logging
 import html
+import time
+import re
 from aiohttp import web
 from aiogram import Router, F
 from aiogram.enums import ParseMode
@@ -28,69 +30,98 @@ COLOMBIA_ID = 33
 TG_SERVICE  = "tg"
 MAX_PRICE   = 0.135
 
+DEFAULT_EXCLUDE_LIST = ["57350"]  # ডিফল্টভাবে 57350 বাদ
+DEFAULT_OPERATOR = "any"          # ডিফল্ট অপারেটর
+
 MENU_BUTTONS = ["Buy Telegram Number", "Bulk Buy Numbers", "Active Numbers", "Balance", "Profile"]
 
 def format_otp_text(phone: str, code: str) -> str:
-    return f"Number: +{phone}\nOTP: {code} | <b>MAH!N</b>"
+    safe_phone = html.escape(str(phone))
+    safe_code = html.escape(str(code))
+    return (
+        f"📱 Number: +{safe_phone}\n"
+        f"🔑 OTP: <code>{safe_code}</code> | <b>MAH!N</b>\n\n"
+        f"ℹ️ <i>কোড ভুল হলে বা পুনরায় ওটিপি চাইতে লিখুন:</i>\n"
+        f"<code>/retry {safe_phone}</code>"
+    )
 
-async def handle_herosms_webhook(request):
-    action = request.query.get("action")
-    aid = request.query.get("activationId") or request.query.get("id")
-    code = request.query.get("code")
+# --- প্রিফিক্স ও অপারেটর হেল্পার ফাংশন ---
+async def get_excluded_prefixes_str() -> str:
+    saved = await db.get_setting("excluded_prefixes")
+    if not saved:
+        return ",".join(DEFAULT_EXCLUDE_LIST)
+    return saved
 
-    if not action or not aid:
-        return web.Response(text="Missing parameters", status=400)
+async def get_preferred_operator_str() -> str:
+    saved = await db.get_setting("preferred_operator")
+    if not saved:
+        return DEFAULT_OPERATOR
+    return saved
 
-    if action == "STATUS_OK" and code:
-        row = await db.get_activation_user(aid)
-        if row:
-            user_id = row[0]
-            phone = row[1]
-            text = format_otp_text(phone, code)
-            bot = get_bot_instance()
-            if bot:
-                try:
-                    await bot.send_message(user_id, text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
-                    user = await db.get_user(user_id)
-                    client = HeroSMSClient(user["api_key"])
-                    await client.set_status(aid, 6)
-                    await db.delete_activation(aid)
-                except Exception as e:
-                    logging.error(f"Failed to send webhook OTP to {user_id}: {e}")
-        return web.Response(text="OK")
-    return web.Response(text="Ignored")
+async def get_valid_user_client(user_id: int):
+    user = await db.get_user(user_id)
+    if not user or not user.get("api_key"):
+        return None, None
+    return user, HeroSMSClient(user["api_key"])
+
+# --- HeroSMS অফিশিয়াল Webhook হ্যান্ডলার ---
+async def handle_herosms_webhook(request: web.Request):
+    try:
+        if request.can_read_body:
+            try:
+                data = await request.json()
+            except Exception:
+                data = dict(await request.post())
+        else:
+            data = dict(request.query)
+    except Exception as e:
+        logging.error(f"Error reading webhook request: {e}")
+        return web.Response(text="Bad Request", status=400)
+
+    aid = str(data.get("activationId") or data.get("id") or "")
+    code = data.get("code")
+    text_body = data.get("text")
+
+    # যদি সরাসরি কোড না থাকে, টেক্সট থেকে এক্সট্রাক্ট করা
+    if not code and text_body:
+        match = re.search(r'\b\d{4,6}\b', str(text_body))
+        if match:
+            code = match.group(0)
+
+    if not aid:
+        return web.Response(text="OK", status=200)
+
+    if code:
+        try:
+            row = await db.get_activation_user(aid)
+            if row:
+                user_id = row[0]
+                phone = row[1]
+                msg_text = format_otp_text(phone, code)
+                bot = get_bot_instance()
+                if bot:
+                    try:
+                        await bot.send_message(
+                            user_id,
+                            msg_text,
+                            reply_markup=kb.otp_copy_menu(code),
+                            parse_mode=ParseMode.HTML
+                        )
+                    except Exception as e:
+                        logging.error(f"Failed to send webhook OTP to {user_id}: {e}")
+                # ডাটাবেজ থেকে সাথে সাথে ডিলিট না করায় ইউজার প্রয়োজনে /retry করতে পারবে
+        except Exception as e:
+            logging.error(f"Error processing webhook for {aid}: {e}")
+
+    return web.Response(text="OK", status=200)
 
 async def is_allowed(user_id: int) -> bool:
     if user_id == ADMIN_ID: return True
     user = await db.get_user(user_id)
-    if user and user["is_banned"]: return False
+    if user and user.get("is_banned"): return False
     maintenance = await db.get_setting("maintenance")
     if maintenance == "1": return False
     return True
-
-async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: HeroSMSClient):
-    # ৩ সেকেন্ড পর পর ৪০০ বার ট্রাই করবে = ২০ মিনিট
-    for _ in range(400):
-        await asyncio.sleep(3)
-        row = await db.get_activation_user(activation_id)
-        if not row:
-            return 
-            
-        try:
-            res = await client.get_status(activation_id)
-            if isinstance(res, str):
-                if res.startswith("STATUS_OK:"):
-                    code = res.split(":", 1)[1]
-                    text = format_otp_text(phone, code)
-                    await bot.send_message(chat_id, text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
-                    await client.set_status(activation_id, 6)
-                    await db.delete_activation(activation_id)
-                    return
-                elif res.startswith("STATUS_CANCEL"):
-                    await db.delete_activation(activation_id)
-                    return
-        except Exception as e:
-            logging.error(f"Polling error for {activation_id}: {e}")
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
@@ -98,7 +129,7 @@ async def cmd_start(message: Message, state: FSMContext):
     await db.add_user(message.from_user.id)
     user = await db.get_user(message.from_user.id)
 
-    if user and user["is_banned"]:
+    if user and user.get("is_banned"):
         await message.answer("You are banned from using this bot.")
         return
 
@@ -107,7 +138,7 @@ async def cmd_start(message: Message, state: FSMContext):
         await message.answer("Bot is under maintenance. Contact Admin.")
         return
 
-    if not user or not user["api_key"]:
+    if not user or not user.get("api_key"):
         await message.answer("Welcome to HeroSMS Bot!\n\nPlease send your HeroSMS API Key to get started.", reply_markup=ReplyKeyboardRemove())
         await state.set_state(BotStates.waiting_for_api_key)
     else:
@@ -140,7 +171,7 @@ async def process_api_key(message: Message, state: FSMContext):
         elif isinstance(res, str):
             err_msg = res
         
-        err_msg = html.escape(err_msg)
+        err_msg = html.escape(str(err_msg))
         if err_msg and err_msg != "None":
             await message.answer(f"Invalid API Key ({err_msg}). Please check and try again.")
         else:
@@ -157,9 +188,10 @@ async def cb_menu_main(callback: CallbackQuery, state: FSMContext):
 @router.message(F.text == "Profile")
 async def text_profile(message: Message):
     if not await is_allowed(message.from_user.id): return
-    user = await db.get_user(message.from_user.id)
-    if not user or not user["api_key"]: return
-    client = HeroSMSClient(user["api_key"])
+    user, client = await get_valid_user_client(message.from_user.id)
+    if not user:
+        await message.answer("Please set your API key first.")
+        return
     balance = await client.get_balance()
     bal_str = f"{balance:.4f} USD" if balance is not None else "Error"
     text = f"Profile\n\nBalance: {bal_str}\nAPI Key: {user['api_key'][:12]}..."
@@ -174,8 +206,10 @@ async def cb_change_key(callback: CallbackQuery, state: FSMContext):
 @router.message(F.text == "Balance")
 async def text_balance(message: Message):
     if not await is_allowed(message.from_user.id): return
-    user = await db.get_user(message.from_user.id)
-    client = HeroSMSClient(user["api_key"])
+    user, client = await get_valid_user_client(message.from_user.id)
+    if not user:
+        await message.answer("Please set your API key first.")
+        return
     balance = await client.get_balance()
     if balance is not None:
         await message.answer(f"Balance: {balance:.4f} USD")
@@ -185,8 +219,10 @@ async def text_balance(message: Message):
 @router.message(F.text == "Buy Telegram Number")
 async def text_buy_tg_number(message: Message):
     if not await is_allowed(message.from_user.id): return
-    user = await db.get_user(message.from_user.id)
-    client = HeroSMSClient(user["api_key"])
+    user, client = await get_valid_user_client(message.from_user.id)
+    if not user:
+        await message.answer("Please set your API key first.")
+        return
     prices = await client.get_prices(country=COLOMBIA_ID, service=TG_SERVICE)
     try:
         cost = prices[str(COLOMBIA_ID)][TG_SERVICE]["cost"]
@@ -202,23 +238,78 @@ async def text_buy_tg_number(message: Message):
 async def cb_buy_number(callback: CallbackQuery):
     parts = callback.data.split("_")
     country_id, service = parts[1], parts[2]
-    user = await db.get_user(callback.from_user.id)
-    client = HeroSMSClient(user["api_key"])
+    user, client = await get_valid_user_client(callback.from_user.id)
+    if not user:
+        await callback.answer("Please set your API key first.", show_alert=True)
+        return
+
     await callback.message.edit_text("Buying number...")
-    res = await client.get_number(service=service, country=country_id, max_price=MAX_PRICE)
+    
+    exc = await get_excluded_prefixes_str() if str(country_id) == str(COLOMBIA_ID) else None
+    op = await get_preferred_operator_str()
+    res = await client.get_number(service=service, country=country_id, max_price=MAX_PRICE, phone_exception=exc, operator=op)
 
     if not isinstance(res, dict) or "activationId" not in res:
         err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
-        await callback.message.edit_text(f"Failed: {html.escape(err)}")
+        await callback.message.edit_text(f"Failed: {html.escape(str(err))}")
         return
 
     aid = str(res["activationId"])
     phone = res.get("phoneNumber", "Unknown")
 
     await db.save_activation(aid, callback.from_user.id, phone)
-    text = f"Number Purchased!\n\nNumber: +{phone}\nID: {aid}\n\nWaiting for OTP..."
+    text = f"Number Purchased!\n\nNumber: +{phone}\nID: {aid}\n\nWaiting for OTP via Webhook..."
     await callback.message.edit_text(text, reply_markup=kb.number_action_menu(aid))
-    asyncio.create_task(poll_sms(callback.bot, callback.message.chat.id, aid, phone, client))
+
+# --- কোড ভুল হলে /retry কমান্ড ---
+@router.message(Command("retry"))
+async def cmd_retry_number(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("⚠️ ব্যবহার নিয়ম: <code>/retry +573...</code> বা <code>/retry 12345678</code>")
+        return
+
+    target = args[1].replace("+", "").strip()
+    user, client = await get_valid_user_client(message.from_user.id)
+    if not user: return
+
+    aid_to_retry = target
+    phone_num = target
+
+    # API থেকে সক্রিয় আইডি ম্যাচ করা
+    res = await client.get_active_activations()
+    if isinstance(res, dict) and res.get("status") == "success":
+        for act in res.get("data", []):
+            if str(act.get("phoneNumber")) == target or str(act.get("activationId")) == target:
+                aid_to_retry = str(act.get("activationId"))
+                phone_num = str(act.get("phoneNumber"))
+                break
+
+    row = await db.get_activation_user(aid_to_retry)
+    if row:
+        phone_num = row[1]
+    else:
+        await db.save_activation(aid_to_retry, message.from_user.id, phone_num)
+
+    # HeroSMS API-তে status=3 পাঠানো (Resend SMS)
+    retry_res = await client.set_status(aid_to_retry, 3)
+
+    if isinstance(retry_res, str) and (
+        retry_res.startswith("ACCESS_RETRY_GET") or
+        retry_res.startswith("STATUS_WAIT_RETRY") or
+        retry_res.startswith("STATUS_WAIT_CODE") or
+        retry_res.startswith("ACCESS_ACTIVATION")
+    ):
+        await message.answer(
+            f"🔄 <b>রি-ট্রাই মোড সক্রিয় হয়েছে!</b>\n\n"
+            f"📱 নম্বর: <code>+{phone_num}</code>\n"
+            f"🆔 ID: <code>{aid_to_retry}</code>\n\n"
+            f"👉 টেলিগ্রাম অ্যাপ থেকে <b>'Resend SMS'</b> দিন। নতুন কোড আসামাত্রই বট অটো ইনবক্সে দিয়ে দেবে।"
+        )
+    else:
+        err = retry_res.get("title", str(retry_res)) if isinstance(retry_res, dict) else str(retry_res)
+        await message.answer(f"❌ রি-ট্রাই করা যায়নি: {html.escape(str(err))}\n(নম্বরটির মেয়াদ শেষ বা বাতিল হয়ে থাকতে পারে)")
 
 @router.message(Command("cancel"))
 async def cmd_cancel_number(message: Message):
@@ -229,8 +320,8 @@ async def cmd_cancel_number(message: Message):
         return
     
     target = args[1].replace("+", "").strip()
-    user = await db.get_user(message.from_user.id)
-    client = HeroSMSClient(user["api_key"])
+    user, client = await get_valid_user_client(message.from_user.id)
+    if not user: return
     
     res = await client.get_active_activations()
     aid_to_cancel = target
@@ -249,13 +340,14 @@ async def cmd_cancel_number(message: Message):
         await message.answer("Cannot cancel within first 2 minutes.")
     else:
         err = cancel_res.get("title", str(cancel_res)) if isinstance(cancel_res, dict) else str(cancel_res)
-        await message.answer(f"Failed to cancel {target}: {html.escape(err)}")
+        await message.answer(f"Failed to cancel {target}: {html.escape(str(err))}")
 
 @router.callback_query(F.data.startswith("single_cancel_"))
 async def cb_cancel_single(callback: CallbackQuery):
     aid = callback.data[len("single_cancel_"):]
-    user = await db.get_user(callback.from_user.id)
-    client = HeroSMSClient(user["api_key"])
+    user, client = await get_valid_user_client(callback.from_user.id)
+    if not user: return
+
     res = await client.set_status(aid, 8)
     if isinstance(res, str) and res.startswith("ACCESS_CANCEL"):
         await db.delete_activation(aid)
@@ -269,8 +361,9 @@ async def cb_cancel_single(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("check_"))
 async def cb_check_sms(callback: CallbackQuery):
     aid = callback.data[len("check_"):]
-    user = await db.get_user(callback.from_user.id)
-    client = HeroSMSClient(user["api_key"])
+    user, client = await get_valid_user_client(callback.from_user.id)
+    if not user: return
+
     row = await db.get_activation_user(aid)
     phone = row[1] if row else "Unknown"
 
@@ -280,8 +373,6 @@ async def cb_check_sms(callback: CallbackQuery):
             code = res.split(":", 1)[1]
             text = format_otp_text(phone, code)
             await callback.message.edit_text(text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
-            await client.set_status(aid, 6)
-            await db.delete_activation(aid)
         elif res.startswith("STATUS_WAIT_CODE"):
             await callback.answer("Still waiting for SMS...", show_alert=True)
         elif res.startswith("STATUS_CANCEL"):
@@ -292,12 +383,109 @@ async def cb_check_sms(callback: CallbackQuery):
     else:
         await callback.answer("Error checking status.", show_alert=True)
 
+# --- প্রিফিক্স ব্লকলিস্ট কমান্ডসমূহ ---
+@router.message(Command("exclude", "blacklist"))
+async def cmd_add_exclude(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("⚠️ ব্যবহার নিয়ম: <code>/exclude 57300</code> বা <code>/blacklist 57300,57301</code>")
+        return
+    
+    new_items = [p.replace("+", "").strip() for p in args[1].split(",") if p.strip()]
+    current_str = await db.get_setting("excluded_prefixes")
+    current_list = current_str.split(",") if current_str else list(DEFAULT_EXCLUDE_LIST)
+    
+    added = []
+    for item in new_items:
+        if item not in current_list:
+            current_list.append(item)
+            added.append(item)
+            
+    if len(current_list) > 20:
+        await message.answer("⚠️ HeroSMS সর্বোচ্চ ২০টি প্রিফিক্স ব্লকলিস্টের অনুমতি দেয়।")
+        return
+
+    await db.set_setting("excluded_prefixes", ",".join(current_list))
+    await message.answer(f"✅ <b>যুক্ত হয়েছে:</b> {', '.join(added)}\n📋 <b>বর্তমান ব্লকলিস্ট:</b> {', '.join(current_list)}")
+
+@router.message(Command("unexclude", "whitelist"))
+async def cmd_remove_exclude(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    args = message.text.split()
+    if len(args) < 2:
+        await message.answer("⚠️ ব্যবহার নিয়ম: <code>/unexclude 57350</code>")
+        return
+    
+    remove_item = args[1].replace("+", "").strip()
+    current_str = await db.get_setting("excluded_prefixes")
+    current_list = current_str.split(",") if current_str else list(DEFAULT_EXCLUDE_LIST)
+    
+    if remove_item in current_list:
+        current_list.remove(remove_item)
+        await db.set_setting("excluded_prefixes", ",".join(current_list))
+        await message.answer(f"✅ <b>{remove_item}</b> সরানো হয়েছে!\n📋 <b>বর্তমান ব্লকলিস্ট:</b> {', '.join(current_list) if current_list else 'খালি'}")
+    else:
+        await message.answer(f"ℹ️ {remove_item} ব্লকলিস্টে পাওয়া যায়নি।")
+
+@router.message(Command("exclude_list"))
+async def cmd_view_exclude(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    current_str = await get_excluded_prefixes_str()
+    prefixes = current_str.split(",") if current_str else []
+    
+    if not prefixes:
+        await message.answer("📋 বর্তমানে কোনো প্রিফিক্স ব্লকলিস্টে নেই।")
+    else:
+        formatted = "\n".join(f"• <code>+{p}</code>" for p in prefixes)
+        await message.answer(f"🚫 <b>বর্তমানে বাদ দেওয়া প্রিফিক্স:</b>\n\n{formatted}")
+
+@router.message(Command("reset_exclude"))
+async def cmd_reset_exclude(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    await db.set_setting("excluded_prefixes", ",".join(DEFAULT_EXCLUDE_LIST))
+    await message.answer(f"🔄 ব্লকলিস্ট রিসেট করা হয়েছে। ডিফল্ট হিসেবে কেবল <b>+{DEFAULT_EXCLUDE_LIST[0]}</b> বাদ থাকবে।")
+
+# --- অপারেটর কমান্ডসমূহ ---
+@router.message(Command("operator"))
+async def cmd_set_operator(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    args = message.text.split()
+    if len(args) < 2:
+        current_op = await get_preferred_operator_str()
+        await message.answer(
+            f"📶 <b>বর্তমান অপারেটর সেটিং:</b> <code>{current_op}</code>\n\n"
+            f"⚙️ <b>সেট করার নিয়ম:</b>\n"
+            f"• নির্দিষ্ট অপারেটর: <code>/operator claro,tigo</code>\n"
+            f"• ডিফল্ট করতে: <code>/operator any</code> বা <code>/reset_operator</code>"
+        )
+        return
+
+    new_op = args[1].strip().lower()
+    await db.set_setting("preferred_operator", new_op)
+    await message.answer(f"✅ পছন্দের অপারেটর সেট করা হয়েছে: <code>{new_op}</code>")
+
+@router.message(Command("operator_list"))
+async def cmd_view_operator(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    current_op = await get_preferred_operator_str()
+    await message.answer(f"📶 বর্তমান অপারেটর সেটিং: <code>{current_op}</code>")
+
+@router.message(Command("reset_operator"))
+async def cmd_reset_operator(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    await db.set_setting("preferred_operator", DEFAULT_OPERATOR)
+    await message.answer(f"🔄 অপারেটর সেটিং রিসেট করা হয়েছে (Default: <code>{DEFAULT_OPERATOR}</code>)")
+
+# --- বাল্ক বাই ---
 @router.message(F.text == "Bulk Buy Numbers")
 async def text_bulk_buy(message: Message, state: FSMContext):
     if not await is_allowed(message.from_user.id): return
     user = await db.get_user(message.from_user.id)
-    if not user or not user["api_key"]: return
-    await message.answer("Bulk Purchase\n\nHow many numbers do you want to buy? (1-500)")
+    if not user or not user.get("api_key"): 
+        await message.answer("Please set your API key first.")
+        return
+    await message.answer("Bulk Purchase\n\nHow many numbers do you want to buy? (1-50)")
     await state.set_state(BotStates.waiting_for_bulk_amount)
 
 @router.message(BotStates.waiting_for_bulk_amount)
@@ -309,66 +497,80 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 
     try:
         amount = int(text)
-        if not (1 <= amount <= 500): raise ValueError
+        if not (1 <= amount <= 50): raise ValueError
     except:
-        await message.answer("Enter a valid number between 1 and 500.")
+        await message.answer("Enter a valid number between 1 and 50.")
         return
 
     await state.clear()
-    user = await db.get_user(message.from_user.id)
-    client = HeroSMSClient(user["api_key"])
+    user, client = await get_valid_user_client(message.from_user.id)
+    if not user: return
 
     status_msg = await message.answer(f"Buying {amount} numbers...")
     
     purchased = []
+    last_edit_time = time.time()
+    current_exc = await get_excluded_prefixes_str()
+    current_op = await get_preferred_operator_str()
+
     for i in range(amount):
-        res = await client.get_number(service=TG_SERVICE, country=COLOMBIA_ID, max_price=MAX_PRICE)
+        res = await client.get_number(
+            service=TG_SERVICE, 
+            country=COLOMBIA_ID, 
+            max_price=MAX_PRICE,
+            phone_exception=current_exc,
+            operator=current_op
+        )
         if isinstance(res, dict) and "activationId" in res:
             aid = str(res["activationId"])
             phone = res.get("phoneNumber", "Unknown")
             purchased.append(phone)
             await db.save_activation(aid, message.from_user.id, phone)
-            asyncio.create_task(poll_sms(message.bot, message.chat.id, aid, phone, client))
             
-            # দ্রুত মেসেজ আপডেট এর জন্য (প্রতি ৩টি পারচেজে বা শেষে আপডেট হবে)
-            if i % 3 == 0 or i == amount - 1:
+            now = time.time()
+            if (now - last_edit_time >= 3.0) or (i == amount - 1):
                 try:
-                    lines = "\n".join(f"{n}. +{p}" for n, p in enumerate(purchased, 1))
+                    display_lines = purchased[-10:]
+                    lines = "\n".join(f"{n}. +{p}" for n, p in enumerate(display_lines, len(purchased)-len(display_lines)+1))
                     upd_text = f"Buying {amount} numbers... ({len(purchased)}/{amount})\n\n{lines}"
-                    if len(upd_text) > 4000: upd_text = upd_text[:3990] + "..."
+                    if len(purchased) > 10:
+                        upd_text += f"\n...and {len(purchased)-10} earlier"
                     await status_msg.edit_text(upd_text)
-                except:
+                    last_edit_time = now
+                except Exception:
                     pass
-            await asyncio.sleep(0.05)  # সর্বনিম্ন ডিলে দিয়ে দ্রুততম কেনা নিশ্চিত করে
+            
+            await asyncio.sleep(0.35)
         else:
             err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
-            await message.answer(f"Stopped at #{i+1}: {html.escape(err)}")
+            await message.answer(f"Stopped at #{i+1}: {html.escape(str(err))}")
             break
 
     if purchased:
         lines = "\n".join(f"{n}. +{p}" for n, p in enumerate(purchased, 1))
-        final = f"Bulk Order Done!\n\nPurchased {len(purchased)} numbers:\n\n{lines}"
+        final = f"Bulk Order Completed!\n\nPurchased {len(purchased)} numbers:\n\n{lines}\n\n<i>Waiting for OTPs via Webhook...</i>"
         if len(final) > 4000:
-            for part in [final[i:i+4000] for i in range(0, len(final), 4000)]:
-                await message.answer(part)
-            await status_msg.delete()
+            for part in [final[j:j+4000] for j in range(0, len(final), 4000)]:
+                await message.answer(part, parse_mode=ParseMode.HTML)
+            try: await status_msg.delete()
+            except: pass
         else:
-            await status_msg.edit_text(final)
+            await status_msg.edit_text(final, parse_mode=ParseMode.HTML)
     else:
         await status_msg.edit_text("Could not purchase any numbers.")
 
 @router.message(F.text == "Active Numbers")
 async def text_active_numbers(message: Message):
     if not await is_allowed(message.from_user.id): return
-    user = await db.get_user(message.from_user.id)
-    if not user or not user["api_key"]: return
-    client = HeroSMSClient(user["api_key"])
+    user, client = await get_valid_user_client(message.from_user.id)
+    if not user: return
+
     status_msg = await message.answer("Fetching active numbers...")
     res = await client.get_active_activations()
 
     if not (isinstance(res, dict) and res.get("status") == "success"):
         err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
-        await status_msg.edit_text(f"Error: {html.escape(err)}")
+        await status_msg.edit_text(f"Error: {html.escape(str(err))}")
         return
 
     activations = res.get("data", [])
@@ -385,10 +587,10 @@ async def text_active_numbers(message: Message):
 @router.callback_query(F.data.startswith("act_page_"))
 async def cb_active_page(callback: CallbackQuery):
     page = int(callback.data.split("_")[2])
-    user = await db.get_user(callback.from_user.id)
-    client = HeroSMSClient(user["api_key"])
-    res = await client.get_active_activations()
+    user, client = await get_valid_user_client(callback.from_user.id)
+    if not user: return
 
+    res = await client.get_active_activations()
     if isinstance(res, dict) and res.get("status") == "success":
         activations = res.get("data", [])
         total = len(activations)
@@ -403,8 +605,9 @@ async def cb_active_page(callback: CallbackQuery):
 @router.callback_query(F.data == "cancel_all_active")
 async def cb_cancel_all_active(callback: CallbackQuery):
     if not await is_allowed(callback.from_user.id): return
-    user = await db.get_user(callback.from_user.id)
-    client = HeroSMSClient(user["api_key"])
+    user, client = await get_valid_user_client(callback.from_user.id)
+    if not user: return
+
     res = await client.get_active_activations()
     if not (isinstance(res, dict) and res.get("status") == "success"):
         await callback.answer("Failed to fetch active numbers.", show_alert=True)
@@ -416,19 +619,24 @@ async def cb_cancel_all_active(callback: CallbackQuery):
 
     await callback.message.edit_text(f"Cancelling {len(activations)} numbers... please wait.")
 
+    sem = asyncio.Semaphore(3)
+
     async def cancel_one(act):
-        aid = str(act.get("activationId", ""))
-        if not aid: return False
-        try:
-            r = await client.set_status(aid, 8)
-            if isinstance(r, str) and (r.startswith("ACCESS_CANCEL") or r.startswith("STATUS_CANCEL")):
-                await db.delete_activation(aid)
-                return True
-            if isinstance(r, dict) and r.get("status") == "success":
-                await db.delete_activation(aid)
-                return True
-        except: pass
-        return False
+        async with sem:
+            aid = str(act.get("activationId", ""))
+            if not aid: return False
+            try:
+                r = await client.set_status(aid, 8)
+                if isinstance(r, str) and (r.startswith("ACCESS_CANCEL") or r.startswith("STATUS_CANCEL")):
+                    await db.delete_activation(aid)
+                    return True
+                if isinstance(r, dict) and r.get("status") == "success":
+                    await db.delete_activation(aid)
+                    return True
+            except Exception:
+                pass
+            await asyncio.sleep(0.15)
+            return False
 
     results = await asyncio.gather(*[cancel_one(a) for a in activations])
     ok = sum(1 for x in results if x)
@@ -440,8 +648,9 @@ async def cb_active_cancel(callback: CallbackQuery):
     aid = parts[2]
     page = int(parts[3]) if len(parts) > 3 else 0
 
-    user = await db.get_user(callback.from_user.id)
-    client = HeroSMSClient(user["api_key"])
+    user, client = await get_valid_user_client(callback.from_user.id)
+    if not user: return
+
     r = await client.set_status(aid, 8)
     if isinstance(r, str) and (r.startswith("ACCESS_CANCEL") or r.startswith("STATUS_CANCEL")):
         await db.delete_activation(aid)
@@ -499,7 +708,8 @@ async def process_broadcast(message: Message, state: FSMContext):
         try:
             await message.bot.send_message(uid, f"Broadcast:\n\n{message.text}")
             sent += 1
-        except: pass
+        except Exception:
+            pass
     await message.answer(f"Sent to {sent} users.")
     await state.clear()
 
@@ -520,7 +730,7 @@ async def process_ban_id(message: Message, state: FSMContext):
     if not user:
         await message.answer("User not found.")
         return
-    new_status = not bool(user["is_banned"])
+    new_status = not bool(user.get("is_banned"))
     await db.set_ban_status(target, new_status)
     label = "Banned" if new_status else "Unbanned"
     await message.answer(f"User {target} {label}.")
