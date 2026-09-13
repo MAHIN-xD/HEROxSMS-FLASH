@@ -62,9 +62,18 @@ class HeroSMSClient:
         if service: params["service"] = service
         return await self._get("getPrices", **params)
 
-    async def get_number(self, service: str, country: int, max_price: float = None):
+    async def get_number(self, service: str, country: int, max_price: float = None, phone_exception: str = None):
         params = {"service": service, "country": country}
-        if max_price: params["maxPrice"] = max_price
+        if max_price: 
+            params["maxPrice"] = max_price
+        
+        # বাদ দেওয়ার জন্য নির্দিষ্ট প্রিফিক্স যুক্ত করা (সর্বোচ্চ ২০টি, কমা দিয়ে আলাদা)
+        if phone_exception:
+            if isinstance(phone_exception, (list, tuple)):
+                params["phoneException"] = ",".join(str(p).strip().lstrip("+") for p in phone_exception)
+            else:
+                params["phoneException"] = str(phone_exception).strip().lstrip("+")
+
         res = await self._get("getNumberV2", **params)
 
         # যদি API টেক্সট রেসপন্স পাঠায় (ACCESS_NUMBER:id:number)
@@ -84,9 +93,12 @@ class HeroSMSClient:
 
         return res
 
-    async def buy_colombia_telegram_number(self, max_price: float = 0.135):
-        """handlers.py এর সাথে সামঞ্জস্য রাখার জন্য শর্টকাট মেথড"""
-        return await self.get_number(service="tg", country=33, max_price=max_price)
+    async def buy_colombia_telegram_number(self, max_price: float = 0.135, phone_exception: str = "57350"):
+        """
+        handlers.py এর সাথে সামঞ্জস্য রাখার জন্য শর্টকাট মেথড।
+        ডিফল্টভাবে 57350 প্রিফিক্স বাদ দিয়ে রিকোয়েস্ট পাঠানো হবে।
+        """
+        return await self.get_number(service="tg", country=33, max_price=max_price, phone_exception=phone_exception)
 
     async def get_status(self, activation_id: str):
         return await self._get("getStatus", id=str(activation_id))
