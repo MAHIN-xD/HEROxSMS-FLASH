@@ -36,6 +36,23 @@ DEFAULT_OPERATOR = "any"
 
 MENU_BUTTONS = ["Buy Telegram Number", "Bulk Buy Numbers", "Active Numbers", "Balance", "Profile"]
 
+def get_colombia_operator(phone: str) -> str:
+    clean = str(phone).lstrip("+").strip()
+    if clean.startswith("57"):
+        clean = clean[2:]
+    prefix = clean[:3]
+    if prefix in ["310", "311", "312", "313", "314", "320", "321", "322", "323"]:
+        return "Claro"
+    elif prefix in ["300", "301", "302", "304", "305", "324"]:
+        return "Tigo"
+    elif prefix in ["315", "316", "317", "318"]:
+        return "Movistar"
+    elif prefix in ["350", "351"]:
+        return "WOM"
+    elif prefix in ["319"]:
+        return "Virgin"
+    return "Unknown"
+
 def format_otp_text(phone: str, code: str) -> str:
     safe_phone = html.escape(str(phone))
     safe_code = html.escape(str(code))
@@ -270,9 +287,10 @@ async def cb_buy_number(callback: CallbackQuery):
 
     aid = str(res["activationId"])
     phone = res.get("phoneNumber", "Unknown")
+    detected_op = get_colombia_operator(phone) if str(country_id) == str(COLOMBIA_ID) else "Standard"
 
     await db.save_activation(aid, callback.from_user.id, phone)
-    text = f"Number Purchased!\n\nNumber: +{phone}\nID: {aid}\n\nWaiting for OTP..."
+    text = f"Number Purchased!\n\nNumber: +{phone} ({detected_op})\nID: {aid}\n\nWaiting for OTP..."
     await callback.message.edit_text(text, reply_markup=kb.number_action_menu(aid))
 
 # --- /retry কমান্ড ---
@@ -780,7 +798,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             if (now - last_edit_time >= 3.0) or (i == amount - 1):
                 try:
                     display_lines = purchased[-10:]
-                    lines = "\n".join(f"{n}. +{p}" for n, p in enumerate(display_lines, len(purchased)-len(display_lines)+1))
+                    lines = "\n".join(f"{n}. +{p} ({get_colombia_operator(p)})" for n, p in enumerate(display_lines, len(purchased)-len(display_lines)+1))
                     upd_text = f"Buying {amount} numbers... ({len(purchased)}/{amount})\n\n{lines}"
                     if len(purchased) > 10:
                         upd_text += f"\n...and {len(purchased)-10} earlier"
@@ -796,7 +814,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             break
 
     if purchased:
-        lines = "\n".join(f"{n}. +{p}" for n, p in enumerate(purchased, 1))
+        lines = "\n".join(f"{n}. +{p} ({get_colombia_operator(p)})" for n, p in enumerate(purchased, 1))
         final = f"Bulk Order Completed!\n\nPurchased {len(purchased)} numbers:\n\n{lines}\n\nWaiting for OTPs..."
         if len(final) > 4000:
             for part in [final[j:j+4000] for j in range(0, len(final), 4000)]:
