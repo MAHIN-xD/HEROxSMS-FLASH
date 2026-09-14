@@ -3,31 +3,14 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 def main_reply_menu() -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
-    b.button(text="Buy Telegram Number")
     b.button(text="Bulk Buy Numbers")
     b.button(text="Active Numbers")
-    b.button(text="Balance")
-    b.button(text="Profile")
-    b.adjust(2, 2, 1)
+    b.adjust(2)
     return b.as_markup(resize_keyboard=True)
-
-def profile_menu() -> InlineKeyboardMarkup:
-    b = InlineKeyboardBuilder()
-    b.button(text="Change API Key", callback_data="profile_change_key")
-    b.button(text="Back", callback_data="menu_main")
-    b.adjust(1)
-    return b.as_markup()
 
 def back_button(callback_data: str = "menu_main") -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="Back", callback_data=callback_data)
-    return b.as_markup()
-
-def confirm_number_menu(country_id, service_code) -> InlineKeyboardMarkup:
-    b = InlineKeyboardBuilder()
-    b.button(text="Confirm Purchase", callback_data=f"buy_{country_id}_{service_code}")
-    b.button(text="Cancel", callback_data="menu_main")
-    b.adjust(1)
     return b.as_markup()
 
 def number_action_menu(activation_id: str) -> InlineKeyboardMarkup:
@@ -43,7 +26,6 @@ def active_numbers_menu(activations: list, page: int = 0, per_page: int = 10) ->
     end_idx = start_idx + per_page
     current_page_items = activations[start_idx:end_idx]
 
-    # ১০ টি নম্বর প্রদর্শন
     for act in current_page_items:
         aid = str(act.get("activationId", ""))
         phone = str(act.get("phoneNumber", "Unknown"))
@@ -52,7 +34,6 @@ def active_numbers_menu(activations: list, page: int = 0, per_page: int = 10) ->
 
     b.adjust(1)
 
-    # পেজিনেশন (Next / Prev) বাটনসমূহ
     nav_buttons = []
     total_pages = (len(activations) + per_page - 1) // per_page
     
