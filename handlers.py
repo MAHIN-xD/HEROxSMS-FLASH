@@ -218,9 +218,9 @@ async def process_api_key(message: Message, state: FSMContext):
             
             err_msg = html.escape(str(err_msg))
             if err_msg and err_msg != "None":
-                await message.answer(f"❌ Invalid API Key ({err_msg}). Please try again.")
+                await message.answer(f"❌ Invalid API Key ({err_msg}). Please check and try again.")
             else:
-                await message.answer("❌ Invalid API Key. Please try again.")
+                await message.answer("❌ Invalid API Key. Please check and try again.")
 
 @router.callback_query(F.data == "menu_main")
 async def cb_menu_main(callback: CallbackQuery, state: FSMContext):
@@ -230,7 +230,7 @@ async def cb_menu_main(callback: CallbackQuery, state: FSMContext):
     except: pass
     await callback.message.answer("Main Menu:", reply_markup=kb.main_reply_menu())
 
-# --- নতুন /balance কমান্ড ---
+# --- /balance কমান্ড ---
 @router.message(Command("balance"))
 @router.message(F.text == "Balance")
 async def cmd_balance(message: Message):
@@ -238,7 +238,7 @@ async def cmd_balance(message: Message):
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         user, client = await get_valid_user_client(message.from_user.id)
         if not user:
-            await message.answer("Please send your HeroSMS API Key first with /api")
+            await message.answer("Please set your HeroSMS API Key first with /api")
             return
         balance = await client.get_balance()
         if balance is not None:
@@ -246,7 +246,7 @@ async def cmd_balance(message: Message):
         else:
             await message.answer("❌ Error fetching balance. Check your API key.")
 
-# --- নতুন /api কমান্ড ---
+# --- /api কমান্ড ---
 @router.message(Command("api"))
 async def cmd_api(message: Message, state: FSMContext):
     if not await is_allowed(message.from_user.id): return
@@ -257,7 +257,34 @@ async def cmd_api(message: Message, state: FSMContext):
     )
     await state.set_state(BotStates.waiting_for_api_key)
 
-# --- নতুন স্মার্ট /ok কমান্ড (যেসব নম্বরে কোড এসেছে বা সম্পন্ন হয়েছে সেগুলো সমাপ্ত করবে) ---
+# --- /check_operators কমান্ড ---
+@router.message(Command("check_operators", "operators"))
+async def cmd_check_live_operators(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+        user, client = await get_valid_user_client(message.from_user.id)
+        if not user:
+            await message.answer("Please set your API key first with /api")
+            return
+
+        res = await client.get_operators(country=COLOMBIA_ID)
+        if isinstance(res, dict) and res.get("status") == "success":
+            ops_dict = res.get("countryOperators", {})
+            colombia_ops = ops_dict.get(str(COLOMBIA_ID), [])
+            if colombia_ops:
+                op_list = ", ".join(colombia_ops)
+                await message.answer(
+                    f"📡 <b>HeroSMS Live Operators (Colombia):</b>\n\n"
+                    f"<code>{op_list}</code>\n\n"
+                    f"💡 <i>অপারেটর সেট করতে লিখুন:</i>\n<code>/operator {colombia_ops[0]}</code>",
+                    parse_mode=ParseMode.HTML
+                )
+            else:
+                await message.answer("বর্তমানে কলম্বিয়ার জন্য কোনো নির্দিষ্ট অপারেটর তালিকাভুক্ত নেই। শুধুমাত্র <code>/operator any</code> কাজ করবে।", parse_mode=ParseMode.HTML)
+        else:
+            await message.answer("❌ অপারেটর তালিকা আনা সম্ভব হয়নি।")
+
+# --- /ok কমান্ড ---
 @router.message(Command("ok"))
 async def cmd_ok_finish(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -291,7 +318,6 @@ async def cmd_ok_finish(message: Message):
                 await message.answer(f"❌ Number or Activation ID {target} not found in active list.")
                 return
         else:
-            # অটো-ডিটেকশন: যেগুলোতে OTP কোড এসেছে বা স্ট্যাটাস সম্পন্ন
             for act in activations:
                 has_otp = bool(act.get("smsCode"))
                 status = str(act.get("activationStatus", ""))
@@ -301,7 +327,7 @@ async def cmd_ok_finish(message: Message):
         if not to_finish:
             await message.answer(
                 "ℹ️ No completed activations found to finish.\n"
-                "💡 <i>Tip: যেসব নম্বরে ওটিপি চলে এসেছে সেগুলো অটো ক্লোজ হবে। নির্দিষ্ট নম্বর ম্যানুয়ালি ফিনিশ করতে লিখুন:</i> <code>/ok +573...</code>",
+                "💡 <i>Tip: যেসব নম্বরে ওটিপি চলে এসেছে সেগুলো অটো সিলেক্ট হবে। নির্দিষ্ট নম্বর ম্যানুয়ালি ফিনিশ করতে লিখুন:</i> <code>/ok +573...</code>",
                 parse_mode=ParseMode.HTML
             )
             return
@@ -311,7 +337,6 @@ async def cmd_ok_finish(message: Message):
             aid = str(act.get("activationId"))
             phone = str(act.get("phoneNumber", "Unknown"))
             try:
-                # status 6 = ACCESS_ACTIVATION (অ্যাক্টিভেশন সম্পূর্ণ কনফার্ম ও ফিনিশ)
                 r = await client.set_status(aid, 6)
                 if isinstance(r, str) and (r.startswith("ACCESS_ACTIVATION") or r.startswith("ACCESS_OK") or "ACTIVATION" in r):
                     await db.delete_activation(aid)
@@ -927,7 +952,8 @@ async def cmd_set_operator(message: Message):
         await message.answer(
             f"Current Operator: {current_op}\n\n"
             f"Usage:\n"
-            f"- Set operator: /operator claro,tigo\n"
+            f"- Set operator: /operator claro\n"
+            f"- Check live operators: /check_operators\n"
             f"- Reset: /operator any"
         )
         return
