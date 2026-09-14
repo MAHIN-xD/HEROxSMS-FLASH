@@ -12,6 +12,17 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+# গ্লোবাল সেশন পুলিং (ল্যাগ রোধ করার জন্য)
+_session_pool = None
+
+async def get_session() -> aiohttp.ClientSession:
+    global _session_pool
+    if _session_pool is None or _session_pool.closed:
+        connector = aiohttp.TCPConnector(limit=100, keepalive_timeout=60, enable_cleanup_closed=True)
+        timeout = aiohttp.ClientTimeout(total=12)
+        _session_pool = aiohttp.ClientSession(connector=connector, headers=HEADERS, timeout=timeout)
+    return _session_pool
+
 class HeroSMSClient:
     def __init__(self, api_key: str):
         self.api_key = api_key.strip().strip("\"'").strip() if api_key else ""
@@ -20,32 +31,29 @@ class HeroSMSClient:
         params = {"api_key": self.api_key, "action": action}
         params.update(kwargs)
         try:
-            timeout = aiohttp.ClientTimeout(total=15)
-            async with aiohttp.ClientSession(headers=HEADERS, timeout=timeout) as session:
-                async with session.get(BASE_URL, params=params) as response:
-                    text = await response.text()
-                    try:
-                        return json.loads(text)
-                    except json.JSONDecodeError:
-                        return text.strip()
+            session = await get_session()
+            async with session.get(BASE_URL, params=params) as response:
+                text = await response.text()
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    return text.strip()
         except Exception as e:
             logging.error(f"API Error ({action}): {e}")
             return None
 
     async def _get_v1(self, endpoint: str, **kwargs):
-        """HeroSMS v1 REST API মেথড (ApiKey হেডার সাপোর্টসহ)"""
         url = f"{V1_BASE_URL}/{endpoint.lstrip('/')}"
         headers = dict(HEADERS)
         headers["Authorization"] = f"ApiKey {self.api_key}"
         try:
-            timeout = aiohttp.ClientTimeout(total=15)
-            async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-                async with session.get(url, params=kwargs) as response:
-                    text = await response.text()
-                    try:
-                        return json.loads(text)
-                    except json.JSONDecodeError:
-                        return text.strip()
+            session = await get_session()
+            async with session.get(url, params=kwargs, headers=headers) as response:
+                text = await response.text()
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    return text.strip()
         except Exception as e:
             logging.error(f"V1 API Error ({endpoint}): {e}")
             return None
@@ -113,36 +121,32 @@ class HeroSMSClient:
 
         return res
 
-    async def buy_colombia_telegram_number(self, max_price: float = 0.135, phone_exception: str = "57350", operator: str = None):
-        return await self.get_number(service="tg", country=33, max_price=max_price, phone_exception=phone_exception, operator=operator)
-
     async def get_status(self, activation_id: str):
         return await self._get("getStatus", id=str(activation_id))
 
     async def set_status(self, activation_id: str, status: int):
         return await self._get("setStatus", id=str(activation_id), status=status)
 
+    async def finish_activation(self, activation_id: str):
+        """অ্যাক্টিভেশন সম্পন্ন করে সমাপ্ত করার মেথড (status 6)"""
+        return await self._get("setStatus", id=str(activation_id), status=6)
+
     async def get_active_activations(self):
         return await self._get("getActiveActivations")
 
-    # --- নতুন যুক্ত করা এন্ডপয়েন্টস ---
     async def get_all_sms(self, activation_id: str):
-        """?action=getAllSms মেথড (একটি অ্যাক্টিভেশনের সব ওটিপি)"""
         return await self._get("getAllSms", id=str(activation_id))
 
     async def get_history(self, size: int = 10, offset: int = 0, start: int = None, end: int = None):
-        """?action=getHistory মেথড"""
         params = {"size": size, "offset": offset}
         if start: params["start"] = start
         if end: params["end"] = end
         return await self._get("getHistory", **params)
 
     async def get_stats(self, date_str: str = None):
-        """/activations/stats মেথড (সাকসেস রেট ও কাউন্ট)"""
         if not date_str:
             date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         return await self._get_v1("activations/stats", date=date_str)
 
     async def get_activations_history(self, from_date: str, to_date: str, size: int = 15):
-        """/activations/history মেথড (টোটাল খরচ ও সফলতার সামারি)"""
         return await self._get_v1("activations/history", **{"from": from_date, "to": to_date, "size": size})
