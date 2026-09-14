@@ -20,6 +20,10 @@ async def on_startup(bot: Bot):
     
     commands = [
         BotCommand(command="start", description="বট শুরু করুন অথবা প্রধান মেনু দেখুন"),
+        BotCommand(command="balance", description="বর্তমান HeroSMS ব্যালেন্স চেক করুন"),
+        BotCommand(command="api", description="নতুন API Key সেট অথবা পরিবর্তন করুন"),
+        BotCommand(command="ok", description="ওটিপি আসা সম্পন্ন নম্বরগুলো ফিনিশ করুন"),
+        BotCommand(command="check_operators", description="লাইভ অপারেটর তালিকা দেখুন"),
         BotCommand(command="stats", description="আজকের সাকসেস রেট ও পরিসংখ্যান"),
         BotCommand(command="getallsms", description="সবগুলো এসএমএস দেখুন (/getallsms <ID/নম্বর>)"),
         BotCommand(command="history", description="সাম্প্রতিক অ্যাক্টিভেশন তালিকা"),
