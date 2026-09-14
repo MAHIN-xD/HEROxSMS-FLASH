@@ -12,7 +12,6 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-# গ্লোবাল সেশন পুলিং (ল্যাগ রোধ করার জন্য)
 _session_pool = None
 
 async def get_session() -> aiohttp.ClientSession:
@@ -90,6 +89,12 @@ class HeroSMSClient:
         if service: params["service"] = service
         return await self._get("getPrices", **params)
 
+    async def get_operators(self, country: int = None):
+        """লাইভ অপারেটর তালিকা পাওয়ার মেথড (?action=getOperators)"""
+        params = {}
+        if country: params["country"] = country
+        return await self._get("getOperators", **params)
+
     async def get_number(self, service: str, country: int, max_price: float = None, phone_exception: str = None, operator: str = None):
         params = {"service": service, "country": country}
         if max_price: 
@@ -128,7 +133,6 @@ class HeroSMSClient:
         return await self._get("setStatus", id=str(activation_id), status=status)
 
     async def finish_activation(self, activation_id: str):
-        """অ্যাক্টিভেশন সম্পন্ন করে সমাপ্ত করার মেথড (status 6)"""
         return await self._get("setStatus", id=str(activation_id), status=6)
 
     async def get_active_activations(self):
