@@ -33,6 +33,8 @@ MAX_PRICE   = 0.135
 
 DEFAULT_EXCLUDE_LIST = ["57350"]
 DEFAULT_OPERATOR = "any"
+
+# ওটিপি ডুপ্লিকেট রোধের জন্য ইন-মেমরি ক্যাশ ডিকশনারি
 processed_otps = {}
 
 MENU_BUTTONS = ["Buy Telegram Number", "Bulk Buy Numbers", "Active Numbers", "Balance", "Profile"]
@@ -94,7 +96,7 @@ async def is_allowed(user_id: int) -> bool:
     if maintenance == "1": return False
     return True
 
-# --- Webhook Handler (ডুপ্লিকেট ওটিপি ফিল্টারসহ) ---
+# --- Webhook Handler (Race Condition ও Duplicate সম্পূর্ণ বন্ধের লজিক) ---
 async def handle_herosms_webhook(request: web.Request):
     try:
         if request.can_read_body:
@@ -108,8 +110,8 @@ async def handle_herosms_webhook(request: web.Request):
         logging.error(f"Error reading webhook request: {e}")
         return web.Response(text="Bad Request", status=400)
 
-    aid = str(data.get("activationId") or data.get("id") or "")
-    code = data.get("code")
+    aid = str(data.get("activationId") or data.get("id") or "").strip()
+    code = str(data.get("code") or "").strip()
     text_body = data.get("text")
 
     if not code and text_body:
@@ -117,35 +119,42 @@ async def handle_herosms_webhook(request: web.Request):
         if match:
             code = match.group(0)
 
-    if not aid:
+    if not aid or not code:
         return web.Response(text="OK", status=200)
 
-    if code:
-        # একই কোড দ্বিতীয়বার পাঠালে মেসেজ না পাঠিয়ে বাতিল করবে
-        if processed_otps.get(aid) == str(code):
-            return web.Response(text="OK", status=200)
+    # অ্যাটমিক লক: কোনো await অপারেশনের আগেই ইনস্ট্যান্ট ডুপ্লিকেট চেক
+    cache_key = f"{aid}:{code}"
+    if cache_key in processed_otps:
+        return web.Response(text="OK", status=200)
 
-        try:
-            row = await db.get_activation_user(aid)
-            if row:
-                user_id = row[0]
-                phone = row[1]
-                msg_text = format_otp_text(phone, code)
-                bot = get_bot_instance()
-                if bot:
-                    try:
-                        await bot.send_message(
-                            user_id,
-                            msg_text,
-                            reply_markup=kb.otp_copy_menu(code),
-                            parse_mode=ParseMode.HTML
-                        )
-                        # একবার পাঠানো হয়ে গেলে সেভ রাখা হবে
-                        processed_otps[aid] = str(code)
-                    except Exception as e:
-                        logging.error(f"Failed to send webhook OTP to {user_id}: {e}")
-        except Exception as e:
-            logging.error(f"Error processing webhook for {aid}: {e}")
+    # সাথে সাথে লক করে দেওয়া হলো যেন মিলিসেকেন্ডের প্যারালাল রিকোয়েস্ট ঢুকতে না পারে
+    processed_otps[cache_key] = time.time()
+
+    # মেমরি পরিষ্কার রাখা (২০ মিনিটের পুরোনো ক্যাশ মুছে ফেলা)
+    now = time.time()
+    for k in list(processed_otps.keys()):
+        if now - processed_otps[k] > 1200:
+            del processed_otps[k]
+
+    try:
+        row = await db.get_activation_user(aid)
+        if row:
+            user_id = row[0]
+            phone = row[1]
+            msg_text = format_otp_text(phone, code)
+            bot = get_bot_instance()
+            if bot:
+                try:
+                    await bot.send_message(
+                        user_id,
+                        msg_text,
+                        reply_markup=kb.otp_copy_menu(code),
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception as e:
+                    logging.error(f"Failed to send webhook OTP to {user_id}: {e}")
+    except Exception as e:
+        logging.error(f"Error processing webhook for {aid}: {e}")
 
     return web.Response(text="OK", status=200)
 
@@ -332,9 +341,10 @@ async def cmd_retry_number(message: Message):
     else:
         await db.save_activation(aid_to_retry, message.from_user.id, phone_num)
 
-    # নতুন কোড আসার পথ তৈরি করতে ক্যাশ থেকে আগের ওটিপি ডিলিট করা
-    if aid_to_retry in processed_otps:
-        del processed_otps[aid_to_retry]
+    # নতুন কোড আসার পথ তৈরি করতে এই নম্বরের পূর্ববর্তী লক মেমরি থেকে সরানো
+    for k in list(processed_otps.keys()):
+        if k.startswith(f"{aid_to_retry}:"):
+            del processed_otps[k]
 
     retry_res = await client.set_status(aid_to_retry, 3)
 
@@ -613,8 +623,9 @@ async def cmd_cancel_number(message: Message):
     cancel_res = await client.set_status(aid_to_cancel, 8)
     if isinstance(cancel_res, str) and (cancel_res.startswith("ACCESS_CANCEL") or cancel_res.startswith("STATUS_CANCEL")):
         await db.delete_activation(aid_to_cancel)
-        if aid_to_cancel in processed_otps:
-            del processed_otps[aid_to_cancel]
+        for k in list(processed_otps.keys()):
+            if k.startswith(f"{aid_to_cancel}:"):
+                del processed_otps[k]
         await message.answer(f"Successfully cancelled {target}. Balance refunded.")
     elif isinstance(cancel_res, str) and "EARLY_CANCEL_DENIED" in cancel_res:
         await message.answer("Cannot cancel within first 2 minutes.")
@@ -631,8 +642,9 @@ async def cb_cancel_single(callback: CallbackQuery):
     res = await client.set_status(aid, 8)
     if isinstance(res, str) and res.startswith("ACCESS_CANCEL"):
         await db.delete_activation(aid)
-        if aid in processed_otps:
-            del processed_otps[aid]
+        for k in list(processed_otps.keys()):
+            if k.startswith(f"{aid}:"):
+                del processed_otps[k]
         await callback.message.edit_text("Cancelled. Balance refunded.", reply_markup=kb.back_button())
     elif isinstance(res, str) and "EARLY_CANCEL_DENIED" in res:
         await callback.answer("Cannot cancel within first 2 minutes.", show_alert=True)
@@ -654,14 +666,15 @@ async def cb_check_sms(callback: CallbackQuery):
         if res.startswith("STATUS_OK:"):
             code = res.split(":", 1)[1]
             text = format_otp_text(phone, code)
-            processed_otps[aid] = str(code)
+            processed_otps[f"{aid}:{code}"] = time.time()
             await callback.message.edit_text(text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
         elif res.startswith("STATUS_WAIT_CODE"):
             await callback.answer("Still waiting for SMS...", show_alert=True)
         elif res.startswith("STATUS_CANCEL"):
             await db.delete_activation(aid)
-            if aid in processed_otps:
-                del processed_otps[aid]
+            for k in list(processed_otps.keys()):
+                if k.startswith(f"{aid}:"):
+                    del processed_otps[k]
             await callback.message.edit_text("Activation cancelled.", reply_markup=kb.back_button())
         else:
             await callback.answer(f"Status: {res}", show_alert=True)
@@ -916,13 +929,15 @@ async def cb_cancel_all_active(callback: CallbackQuery):
                 r = await client.set_status(aid, 8)
                 if isinstance(r, str) and (r.startswith("ACCESS_CANCEL") or r.startswith("STATUS_CANCEL")):
                     await db.delete_activation(aid)
-                    if aid in processed_otps:
-                        del processed_otps[aid]
+                    for k in list(processed_otps.keys()):
+                        if k.startswith(f"{aid}:"):
+                            del processed_otps[k]
                     return True
                 if isinstance(r, dict) and r.get("status") == "success":
                     await db.delete_activation(aid)
-                    if aid in processed_otps:
-                        del processed_otps[aid]
+                    for k in list(processed_otps.keys()):
+                        if k.startswith(f"{aid}:"):
+                            del processed_otps[k]
                     return True
             except Exception:
                 pass
@@ -945,8 +960,9 @@ async def cb_active_cancel(callback: CallbackQuery):
     r = await client.set_status(aid, 8)
     if isinstance(r, str) and (r.startswith("ACCESS_CANCEL") or r.startswith("STATUS_CANCEL")):
         await db.delete_activation(aid)
-        if aid in processed_otps:
-            del processed_otps[aid]
+        for k in list(processed_otps.keys()):
+            if k.startswith(f"{aid}:"):
+                del processed_otps[k]
         await callback.answer("Cancelled!", show_alert=True)
         res = await client.get_active_activations()
         if isinstance(res, dict) and res.get("status") == "success":
