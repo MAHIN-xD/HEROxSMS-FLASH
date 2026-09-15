@@ -66,7 +66,7 @@ def format_otp_text(phone: str, code: str) -> str:
     clean_phone = str(phone).lstrip("+").strip()
     safe_phone = html.escape(clean_phone)
     safe_code = html.escape(str(code).strip())
-    return f"<b>Number:</b> 🇨🇴 <code>+{safe_phone}</code>\n\n<b>OTP:</b> <code>{safe_code}</code> 🪽 | <b>MAH!N</b>"
+    return f"<b>🇨🇴 Telegram</b> <code>+{safe_phone}</code>"
 
 def format_tg_status(raw_status: any) -> dict:
     if raw_status is None:
