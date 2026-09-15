@@ -13,7 +13,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.utils.chat_action import ChatActionSender
 
 import database as db
-from api_client import HeroSMSClient
+from api_client import HeroSMSClient, check_telegram_numbers
 import keyboards as kb
 from states import BotStates
 
@@ -57,9 +57,10 @@ def get_colombia_operator(phone: str) -> str:
     return "Unknown"
 
 def format_otp_text(phone: str, code: str) -> str:
-    safe_phone = html.escape(str(phone))
+    clean_phone = str(phone).lstrip("+").strip()
+    safe_phone = html.escape(clean_phone)
     safe_code = html.escape(str(code))
-    return f"Number: +{safe_phone}\nOTP: {safe_code} | <b>MAH!N</b>"
+    return f"Number: <code>+{safe_phone}</code>\nOTP: <code>{safe_code}</code> | <b>MAH!N</b>"
 
 async def get_excluded_prefixes_str() -> str:
     saved = await db.get_setting("excluded_prefixes")
@@ -257,6 +258,49 @@ async def cmd_api(message: Message, state: FSMContext):
     )
     await state.set_state(BotStates.waiting_for_api_key)
 
+# --- নতুন /ck কমান্ড (এক বা একাধিক নম্বর চেকার) ---
+@router.message(Command("ck", "check"))
+async def cmd_check_numbers(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    raw_args = message.text[len("/ck"):].strip() if message.text.startswith("/ck") else message.text[len("/check"):].strip()
+    
+    # ইনপুট থেকে নম্বরগুলো ফিল্টার করা
+    found_numbers = re.findall(r'\+?\d{8,16}', raw_args)
+    
+    if not found_numbers:
+        await message.answer(
+            "ℹ️ <b>ব্যবহারবিধি:</b>\n"
+            "<code>/ck +573001234567</code>\n"
+            "একাধিক নম্বর একসাথে চেক করতে স্পেস দিয়ে লিখুন:\n"
+            "<code>/ck +573001234567 +573109876543 +989915756448</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+        status_msg = await message.answer(f"🔍 Checking Telegram status for {len(found_numbers)} numbers...")
+        results = await check_telegram_numbers(found_numbers)
+
+        lines = ["<b>📡 Telegram Registration Status:</b>\n"]
+        for idx, raw_num in enumerate(found_numbers, 1):
+            clean = raw_num.strip().lstrip("+")
+            formatted_key = f"+{clean}"
+            
+            # রেজাল্ট বের করা
+            st = results.get(formatted_key) or results.get(clean) or "Unknown / Error"
+            st_text = str(st).capitalize()
+            
+            lines.append(f"{idx}. <code>{formatted_key}</code> — <b>{st_text}</b>")
+
+        final_text = "\n".join(lines)
+        if len(final_text) > 4000:
+            for part in [final_text[j:j+4000] for j in range(0, len(final_text), 4000)]:
+                await message.answer(part, parse_mode=ParseMode.HTML)
+            try: await status_msg.delete()
+            except: pass
+        else:
+            await status_msg.edit_text(final_text, parse_mode=ParseMode.HTML)
+
 # --- /check_operators কমান্ড ---
 @router.message(Command("check_operators", "operators"))
 async def cmd_check_live_operators(message: Message):
@@ -336,6 +380,7 @@ async def cmd_ok_finish(message: Message):
         for act in to_finish:
             aid = str(act.get("activationId"))
             phone = str(act.get("phoneNumber", "Unknown"))
+            clean_phone = phone.lstrip("+").strip()
             try:
                 r = await client.set_status(aid, 6)
                 if isinstance(r, str) and (r.startswith("ACCESS_ACTIVATION") or r.startswith("ACCESS_OK") or "ACTIVATION" in r):
@@ -343,20 +388,20 @@ async def cmd_ok_finish(message: Message):
                     for k in list(processed_otps.keys()):
                         if k.startswith(f"{aid}:"):
                             del processed_otps[k]
-                    op = get_colombia_operator(phone)
-                    finished_lines.append(f"• +{phone} ({op}) - Finished ✅")
+                    op = get_colombia_operator(clean_phone)
+                    finished_lines.append(f"• <code>+{clean_phone}</code> ({op}) - Finished ✅")
                 elif isinstance(r, dict) and r.get("status") == "success":
                     await db.delete_activation(aid)
                     for k in list(processed_otps.keys()):
                         if k.startswith(f"{aid}:"):
                             del processed_otps[k]
-                    op = get_colombia_operator(phone)
-                    finished_lines.append(f"• +{phone} ({op}) - Finished ✅")
+                    op = get_colombia_operator(clean_phone)
+                    finished_lines.append(f"• <code>+{clean_phone}</code> ({op}) - Finished ✅")
                 else:
                     err = r.get("title", str(r)) if isinstance(r, dict) else str(r)
-                    finished_lines.append(f"• +{phone} - ⚠️ {html.escape(str(err))}")
+                    finished_lines.append(f"• <code>+{clean_phone}</code> - ⚠️ {html.escape(str(err))}")
             except Exception as e:
-                finished_lines.append(f"• +{phone} - Error: {e}")
+                finished_lines.append(f"• <code>+{clean_phone}</code> - Error: {e}")
 
         summary_text = f"<b>✅ Finished Activations ({len(finished_lines)}):</b>\n\n" + "\n".join(finished_lines)
         await message.answer(summary_text, parse_mode=ParseMode.HTML)
@@ -406,11 +451,13 @@ async def cmd_retry_number(message: Message):
             retry_res.startswith("STATUS_WAIT_CODE") or
             retry_res.startswith("ACCESS_ACTIVATION")
         ):
+            clean_p = str(phone_num).lstrip("+")
             await message.answer(
                 f"Retry mode activated.\n\n"
-                f"Number: +{phone_num}\n"
-                f"ID: {aid_to_retry}\n\n"
-                f"Please click 'Resend SMS' in Telegram. New code will be delivered automatically."
+                f"Number: <code>+{clean_p}</code>\n"
+                f"ID: <code>{aid_to_retry}</code>\n\n"
+                f"Please click 'Resend SMS' in Telegram. New code will be delivered automatically.",
+                parse_mode=ParseMode.HTML
             )
         else:
             err = retry_res.get("title", str(retry_res)) if isinstance(retry_res, dict) else str(retry_res)
@@ -466,7 +513,7 @@ async def cmd_get_all_sms(message: Message):
 
             lines.append(
                 f"#{idx} [{v_type.upper()}] From: {sender}\n"
-                f"Code: {code}\n"
+                f"Code: <code>{code}</code>\n"
                 f"Message: {text_body}\n"
                 f"Date: {time_str}\n"
             )
@@ -574,7 +621,7 @@ async def cmd_history(message: Message):
 
         lines = [f"Latest {len(res)} Activations:\n"]
         for idx, item in enumerate(res, 1):
-            phone = html.escape(str(item.get("phone", "Unknown")))
+            phone = html.escape(str(item.get("phone", "Unknown"))).lstrip("+")
             cost = item.get("cost", 0)
             status_code = str(item.get("status", ""))
             date_str = html.escape(str(item.get("date", "")))
@@ -583,8 +630,8 @@ async def cmd_history(message: Message):
             status_label = "Success" if status_code in ["4", "6"] else ("Cancelled" if status_code == "8" else f"Status {status_code}")
 
             lines.append(
-                f"#{idx} +{phone}\n"
-                f"- OTP: {sms_code}\n"
+                f"#{idx} <code>+{phone}</code>\n"
+                f"- OTP: <code>{sms_code}</code>\n"
                 f"- Cost: {cost} USD | Status: {status_label}\n"
                 f"- Date: {date_str}\n"
             )
@@ -623,12 +670,12 @@ async def cmd_cancel_number(message: Message):
             for k in list(processed_otps.keys()):
                 if k.startswith(f"{aid_to_cancel}:"):
                     del processed_otps[k]
-            await message.answer(f"Successfully cancelled {target}. Balance refunded.")
+            await message.answer(f"Successfully cancelled <code>+{target.lstrip('+')}</code>. Balance refunded.", parse_mode=ParseMode.HTML)
         elif isinstance(cancel_res, str) and "EARLY_CANCEL_DENIED" in cancel_res:
             await message.answer("Cannot cancel within first 2 minutes.")
         else:
             err = cancel_res.get("title", str(cancel_res)) if isinstance(cancel_res, dict) else str(cancel_res)
-            await message.answer(f"Failed to cancel {target}: {html.escape(str(err))}")
+            await message.answer(f"Failed to cancel: {html.escape(str(err))}")
 
 @router.callback_query(F.data.startswith("single_cancel_"))
 async def cb_cancel_single(callback: CallbackQuery):
@@ -678,7 +725,7 @@ async def cb_check_sms(callback: CallbackQuery):
     else:
         await callback.answer("Error checking status.", show_alert=True)
 
-# --- বাল্ক বাই ---
+# --- বাল্ক বাই (নম্বর কেনার পর লাইভ টেলিগ্রাম চেকার রেজাল্টসহ) ---
 @router.message(F.text == "Bulk Buy Numbers")
 async def text_bulk_buy(message: Message, state: FSMContext):
     if not await is_allowed(message.from_user.id): return
@@ -725,18 +772,22 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         if isinstance(res, dict) and "activationId" in res:
             aid = str(res["activationId"])
             phone = res.get("phoneNumber", "Unknown")
-            purchased.append(phone)
-            await db.save_activation(aid, message.from_user.id, phone)
+            clean_phone = str(phone).lstrip("+").strip()
+            purchased.append(clean_phone)
+            await db.save_activation(aid, message.from_user.id, clean_phone)
             
             now = time.time()
             if (now - last_edit_time >= 3.0) or (i == amount - 1):
                 try:
                     display_lines = purchased[-10:]
-                    lines = "\n".join(f"{n}. +{p} ({get_colombia_operator(p)})" for n, p in enumerate(display_lines, len(purchased)-len(display_lines)+1))
+                    lines = "\n".join(
+                        f"{n}. <code>+{p}</code> ({get_colombia_operator(p)})" 
+                        for n, p in enumerate(display_lines, len(purchased)-len(display_lines)+1)
+                    )
                     upd_text = f"Buying {amount} numbers... ({len(purchased)}/{amount})\n\n{lines}"
                     if len(purchased) > 10:
                         upd_text += f"\n...and {len(purchased)-10} earlier"
-                    await status_msg.edit_text(upd_text)
+                    await status_msg.edit_text(upd_text, parse_mode=ParseMode.HTML)
                     last_edit_time = now
                 except Exception:
                     pass
@@ -748,8 +799,29 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             break
 
     if purchased:
-        lines = "\n".join(f"{n}. +{p} ({get_colombia_operator(p)})" for n, p in enumerate(purchased, 1))
-        final = f"Bulk Order Completed!\n\nPurchased {len(purchased)} numbers:\n\n{lines}\n\nWaiting for OTPs..."
+        # কেনার পর সবগুলোর টেলিগ্রাম রেজিস্ট্রেশন স্ট্যাটাস চেক করা
+        try:
+            await status_msg.edit_text(f"✅ Purchased {len(purchased)} numbers!\n🔍 Checking Telegram registration status, please wait...")
+        except Exception:
+            pass
+
+        check_results = await check_telegram_numbers(purchased)
+
+        lines = []
+        for n, p in enumerate(purchased, 1):
+            op = get_colombia_operator(p)
+            formatted_k = f"+{p}"
+            status = check_results.get(formatted_k) or check_results.get(p) or "Checked"
+            st_text = str(status).capitalize()
+            lines.append(f"{n}. <code>+{p}</code> ({op}) — <b>{st_text}</b>")
+
+        final = (
+            f"🎉 <b>Bulk Order Completed!</b>\n"
+            f"Purchased {len(purchased)} numbers (tap any number to copy):\n\n"
+            + "\n".join(lines)
+            + "\n\nWaiting for OTPs..."
+        )
+
         if len(final) > 4000:
             for part in [final[j:j+4000] for j in range(0, len(final), 4000)]:
                 await message.answer(part, parse_mode=ParseMode.HTML)
@@ -940,8 +1012,8 @@ async def cmd_view_exclude(message: Message):
     if not prefixes:
         await message.answer("Currently no prefixes are blacklisted.")
     else:
-        formatted = "\n".join(f"- +{p}" for p in prefixes)
-        await message.answer(f"Currently blacklisted prefixes:\n\n{formatted}")
+        formatted = "\n".join(f"- <code>+{p}</code>" for p in prefixes)
+        await message.answer(f"Currently blacklisted prefixes:\n\n{formatted}", parse_mode=ParseMode.HTML)
 
 @router.message(Command("operator"))
 async def cmd_set_operator(message: Message):
