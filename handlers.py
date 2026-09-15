@@ -62,6 +62,34 @@ def format_otp_text(phone: str, code: str) -> str:
     safe_code = html.escape(str(code))
     return f"Number: <code>+{safe_phone}</code>\nOTP: <code>{safe_code}</code> | <b>MAH!N</b>"
 
+def format_tg_status(raw_status: str) -> dict:
+    """
+    Phone_number_banned, Phone_number_occupied ইত্যাদি ফিল্টার করে 
+    সুন্দর ইমোজি ব্যাজ ও সর্টিং প্রায়োরিটিতে কনভার্ট করার হেল্পার
+    """
+    st = str(raw_status).strip().lower()
+    
+    # Fresh / Unregistered (Priority 1)
+    if any(w in st for w in ["unregistered", "not_registered", "fresh", "free", "available", "valid"]):
+        return {"badge": "✅ Fresh", "priority": 1, "is_fresh": True}
+    
+    # Locked / 2FA / Flood (Priority 2)
+    elif any(w in st for w in ["flood", "locked", "wait", "restricted", "2fa"]):
+        return {"badge": "🔒 Locked", "priority": 2, "is_fresh": False}
+    
+    # Occupied / Registered (Priority 3)
+    elif any(w in st for w in ["occupied", "registered", "taken", "used"]):
+        return {"badge": "❌ Occupied", "priority": 3, "is_fresh": False}
+    
+    # Banned (Priority 4)
+    elif any(w in st for w in ["banned", "ban"]):
+        return {"badge": "🚫 Banned", "priority": 4, "is_fresh": False}
+    
+    # অন্যান্য যেকোনো স্ট্যাটাস
+    else:
+        clean = re.sub(r'phone_number_', '', st, flags=re.IGNORECASE).replace('_', ' ').strip().title()
+        return {"badge": f"⚠️ {clean or 'Unknown'}", "priority": 5, "is_fresh": False}
+
 async def get_excluded_prefixes_str() -> str:
     saved = await db.get_setting("excluded_prefixes")
     if not saved:
@@ -258,39 +286,67 @@ async def cmd_api(message: Message, state: FSMContext):
     )
     await state.set_state(BotStates.waiting_for_api_key)
 
-# --- নতুন /ck কমান্ড (এক বা একাধিক নম্বর চেকার) ---
+# --- /ck কমান্ড (গ্রিন টিক ফ্রেশ সবার উপরে, নিচে রেড/লকড/ব্যান্ড) ---
 @router.message(Command("ck", "check"))
 async def cmd_check_numbers(message: Message):
     if not await is_allowed(message.from_user.id): return
+    
     raw_args = message.text[len("/ck"):].strip() if message.text.startswith("/ck") else message.text[len("/check"):].strip()
     
-    # ইনপুট থেকে নম্বরগুলো ফিল্টার করা
-    found_numbers = re.findall(r'\+?\d{8,16}', raw_args)
+    tokens = re.split(r'[\s,;\n]+', raw_args)
+    found_numbers = []
     
-    if not found_numbers:
+    for t in tokens:
+        cleaned_digits = re.sub(r'[^\d]', '', t)
+        if 7 <= len(cleaned_digits) <= 16:
+            found_numbers.append(f"+{cleaned_digits}")
+
+    unique_numbers = list(dict.fromkeys(found_numbers))
+
+    if not unique_numbers:
         await message.answer(
             "ℹ️ <b>ব্যবহারবিধি:</b>\n"
-            "<code>/ck +573001234567</code>\n"
-            "একাধিক নম্বর একসাথে চেক করতে স্পেস দিয়ে লিখুন:\n"
-            "<code>/ck +573001234567 +573109876543 +989915756448</code>",
+            "<code>/ck +573001234567</code> অথবা <code>/ck 573001234567</code>\n\n"
+            "যেকোনো পরিমাণ নম্বর স্পেস, কমা বা নতুন লাইনে দিয়ে চেক করুন:\n"
+            "<code>/ck 573001234567 573109876543 +989915756448</code>",
             parse_mode=ParseMode.HTML
         )
         return
 
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-        status_msg = await message.answer(f"🔍 Checking Telegram status for {len(found_numbers)} numbers...")
-        results = await check_telegram_numbers(found_numbers)
+        status_msg = await message.answer(f"🔍 Checking Telegram status for {len(unique_numbers)} numbers...")
+        results = await check_telegram_numbers(unique_numbers)
 
-        lines = ["<b>📡 Telegram Registration Status:</b>\n"]
-        for idx, raw_num in enumerate(found_numbers, 1):
-            clean = raw_num.strip().lstrip("+")
-            formatted_key = f"+{clean}"
-            
-            # রেজাল্ট বের করা
-            st = results.get(formatted_key) or results.get(clean) or "Unknown / Error"
-            st_text = str(st).capitalize()
-            
-            lines.append(f"{idx}. <code>{formatted_key}</code> — <b>{st_text}</b>")
+        parsed_items = []
+        for formatted_key in unique_numbers:
+            clean = formatted_key.lstrip("+")
+            st = results.get(formatted_key) or results.get(clean) or "Unknown"
+            info = format_tg_status(st)
+            parsed_items.append({
+                "number": formatted_key,
+                "badge": info["badge"],
+                "priority": info["priority"],
+                "is_fresh": info["is_fresh"]
+            })
+
+        # ১. গ্রিন টিক (Fresh) নম্বরগুলো সবার উপরে
+        fresh_list = [x for x in parsed_items if x["is_fresh"]]
+        # ২. বাকিগুলো (Locked, Occupied, Banned) নিচে
+        other_list = [x for x in parsed_items if not x["is_fresh"]]
+        other_list.sort(key=lambda x: x["priority"])
+
+        lines = [f"<b>📡 Telegram Registration Status ({len(unique_numbers)}):</b>\n"]
+        
+        if fresh_list:
+            lines.append(f"🟢 <b>Fresh Numbers ({len(fresh_list)}):</b>")
+            for idx, item in enumerate(fresh_list, 1):
+                lines.append(f"{idx}. <code>{item['number']}</code> — <b>{item['badge']}</b>")
+            lines.append("")  # হালকা গ্যাপ
+
+        if other_list:
+            lines.append(f"🔻 <b>Unavailable / Occupied ({len(other_list)}):</b>")
+            for idx, item in enumerate(other_list, 1):
+                lines.append(f"{idx}. <code>{item['number']}</code> — <b>{item['badge']}</b>")
 
         final_text = "\n".join(lines)
         if len(final_text) > 4000:
@@ -725,7 +781,7 @@ async def cb_check_sms(callback: CallbackQuery):
     else:
         await callback.answer("Error checking status.", show_alert=True)
 
-# --- বাল্ক বাই (নম্বর কেনার পর লাইভ টেলিগ্রাম চেকার রেজাল্টসহ) ---
+# --- বাল্ক বাই (গ্রিন টিক ফ্রেশ উপরে, নিচে অন্যগুলো) ---
 @router.message(F.text == "Bulk Buy Numbers")
 async def text_bulk_buy(message: Message, state: FSMContext):
     if not await is_allowed(message.from_user.id): return
@@ -799,7 +855,6 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             break
 
     if purchased:
-        # কেনার পর সবগুলোর টেলিগ্রাম রেজিস্ট্রেশন স্ট্যাটাস চেক করা
         try:
             await status_msg.edit_text(f"✅ Purchased {len(purchased)} numbers!\n🔍 Checking Telegram registration status, please wait...")
         except Exception:
@@ -807,21 +862,44 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 
         check_results = await check_telegram_numbers(purchased)
 
-        lines = []
-        for n, p in enumerate(purchased, 1):
+        parsed_items = []
+        for p in purchased:
             op = get_colombia_operator(p)
             formatted_k = f"+{p}"
-            status = check_results.get(formatted_k) or check_results.get(p) or "Checked"
-            st_text = str(status).capitalize()
-            lines.append(f"{n}. <code>+{p}</code> ({op}) — <b>{st_text}</b>")
+            raw_st = check_results.get(formatted_k) or check_results.get(p) or "Checked"
+            info = format_tg_status(raw_st)
+            parsed_items.append({
+                "phone": p,
+                "operator": op,
+                "badge": info["badge"],
+                "priority": info["priority"],
+                "is_fresh": info["is_fresh"]
+            })
 
-        final = (
-            f"🎉 <b>Bulk Order Completed!</b>\n"
-            f"Purchased {len(purchased)} numbers (tap any number to copy):\n\n"
-            + "\n".join(lines)
-            + "\n\nWaiting for OTPs..."
-        )
+        fresh_list = [x for x in parsed_items if x["is_fresh"]]
+        other_list = [x for x in parsed_items if not x["is_fresh"]]
+        other_list.sort(key=lambda x: x["priority"])
 
+        lines = [
+            f"🎉 <b>Bulk Order Completed!</b>",
+            f"Total: {len(purchased)} numbers (tap any number to copy)\n"
+        ]
+
+        if fresh_list:
+            lines.append(f"🟢 <b>Fresh Numbers ({len(fresh_list)}):</b>")
+            for idx, item in enumerate(fresh_list, 1):
+                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — <b>{item['badge']}</b>")
+            lines.append("")
+
+        if other_list:
+            lines.append(f"🔻 <b>Unavailable / Occupied ({len(other_list)}):</b>")
+            for idx, item in enumerate(other_list, 1):
+                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — <b>{item['badge']}</b>")
+            lines.append("")
+
+        lines.append("Waiting for OTPs...")
+
+        final = "\n".join(lines)
         if len(final) > 4000:
             for part in [final[j:j+4000] for j in range(0, len(final), 4000)]:
                 await message.answer(part, parse_mode=ParseMode.HTML)
