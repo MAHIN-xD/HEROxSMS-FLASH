@@ -3,7 +3,16 @@ import asyncio
 import json
 import logging
 import re
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
+
+# requests ইনস্টল থাকলে সরাসরি ব্যবহার করবে, না থাকলে বিল্ট-ইন urllib দিয়ে চলবে
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
 
 BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
 V1_BASE_URL = "https://hero-sms.com/api/v1"
@@ -25,48 +34,66 @@ async def get_session() -> aiohttp.ClientSession:
     global _session_pool
     if _session_pool is None or _session_pool.closed:
         connector = aiohttp.TCPConnector(limit=100, keepalive_timeout=60, enable_cleanup_closed=True)
-        timeout = aiohttp.ClientTimeout(total=25)
+        timeout = aiohttp.ClientTimeout(total=30)
         _session_pool = aiohttp.ClientSession(connector=connector, headers=HEADERS, timeout=timeout)
     return _session_pool
 
-async def _check_single_chunk(session: aiohttp.ClientSession, chunk: list) -> dict:
+def _sync_check_chunk(chunk_numbers: list) -> dict:
     payload = {
         "auth": CHECKER_AUTH,
         "api_key": CHECKER_API_KEY,
-        "phone_numbers": chunk
+        "phone_numbers": chunk_numbers
     }
 
-    # মেথড ১: aiohttp GET (স্যাম্পল কোডের মতো সরাসরি কল)
-    try:
-        async with session.get(CHECKER_URL, json=payload, timeout=aiohttp.ClientTimeout(total=35)) as resp:
-            if resp.status == 200:
-                data = await resp.json(content_type=None)
-                if str(data.get("status")) == "200" and "result_obj" in data:
+    # ১. requests থাকলে স্যাম্পল কোডের মতো সরাসরি requests.get কল হবে
+    if HAS_REQUESTS:
+        try:
+            resp = requests.get(CHECKER_URL, json=payload, timeout=60)
+            if resp.status_code == 200:
+                data = resp.json()
+                if str(data.get("status")) == "200":
                     return data.get("result_obj") or {}
-                elif str(data.get("status")) != "200":
-                    err_msg = data.get("msg") or data.get("message") or "API Logic Error"
-                    logging.warning(f"Checker API error: {err_msg}")
-                    return {num: f"API_ERROR: {err_msg}" for num in chunk}
-    except Exception as e:
-        logging.warning(f"Checker GET failed: {e}, attempting POST fallback...")
+                else:
+                    logging.warning(f"Checker API error: {data}")
+                    return {num: f"API_ERROR: {data.get('msg') or data}" for num in chunk_numbers}
+            else:
+                logging.warning(f"Checker HTTP status: {resp.status_code}")
+        except Exception as e:
+            logging.error(f"Checker requests.get failed: {e}")
 
-    # মেথড ২: aiohttp POST ফলব্যাক (যদি GET ড্রপ হয়)
+    # ২. requests না থাকলে পাইথনের বিল্ট-ইন urllib দিয়ে ৬০ সেকেন্ড টাইমআউটে চলবে
     try:
-        async with session.post(CHECKER_URL, json=payload, timeout=aiohttp.ClientTimeout(total=35)) as resp:
+        req_data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            CHECKER_URL,
+            data=req_data,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "python-requests/2.31.0",
+                "Accept": "*/*"
+            },
+            method="GET"
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
             if resp.status == 200:
-                data = await resp.json(content_type=None)
-                if str(data.get("status")) == "200" and "result_obj" in data:
+                body = resp.read().decode("utf-8")
+                data = json.loads(body)
+                if str(data.get("status")) == "200":
                     return data.get("result_obj") or {}
-                elif str(data.get("status")) != "200":
-                    err_msg = data.get("msg") or data.get("message") or "API Logic Error"
-                    return {num: f"API_ERROR: {err_msg}" for num in chunk}
+                else:
+                    logging.warning(f"Checker urllib error: {data}")
+                    return {num: f"API_ERROR: {data.get('msg') or data}" for num in chunk_numbers}
+            else:
+                logging.warning(f"Checker urllib HTTP status: {resp.status}")
     except Exception as e:
-        logging.error(f"Checker POST failed: {e}")
+        logging.error(f"Checker urllib failed: {e}")
 
-    # কোনো কারণে নেটওয়ার্ক ফেইল হলে যাতে ব্যান না দেখায়
-    return {num: "CHECK_FAILED" for num in chunk}
+    return {num: "CHECK_FAILED" for num in chunk_numbers}
 
 async def check_telegram_numbers(phone_numbers: list) -> dict:
+    """
+    ১০টি করে ব্যাচে পাঠিয়ে ৬০ সেকেন্ড পর্যন্ত অপেক্ষা করে নির্ভুল স্ট্যাটাস নিশ্চিত করে
+    """
     if not phone_numbers:
         return {}
 
@@ -84,12 +111,11 @@ async def check_telegram_numbers(phone_numbers: list) -> dict:
         return {}
 
     all_results = {}
-    chunk_size = 15
-    session = await get_session()
+    chunk_size = 10
 
     for i in range(0, len(unique_numbers), chunk_size):
         chunk = unique_numbers[i:i + chunk_size]
-        res_obj = await _check_single_chunk(session, chunk)
+        res_obj = await asyncio.to_thread(_sync_check_chunk, chunk)
         for k, v in res_obj.items():
             clean_k = re.sub(r'[^\d]', '', str(k))
             all_results[str(k)] = v
