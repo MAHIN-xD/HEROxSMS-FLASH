@@ -1,7 +1,9 @@
 import aiohttp
+import asyncio
 import json
 import logging
 import re
+import requests
 from datetime import datetime, timezone
 
 BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
@@ -28,10 +30,31 @@ async def get_session() -> aiohttp.ClientSession:
         _session_pool = aiohttp.ClientSession(connector=connector, headers=HEADERS, timeout=timeout)
     return _session_pool
 
+def _sync_check_chunk(chunk_numbers: list) -> dict:
+    """স্যাম্পল ফাইলের মতো requests.get দিয়ে হুবহু কল করার সিঙ্ক মেথড"""
+    payload = {
+        "auth": CHECKER_AUTH,
+        "api_key": CHECKER_API_KEY,
+        "phone_numbers": chunk_numbers
+    }
+    try:
+        resp = requests.get(CHECKER_URL, json=payload, timeout=40)
+        if resp.status_code == 200:
+            data = resp.json()
+            if str(data.get("status")) == "200":
+                return data.get("result_obj") or {}
+            else:
+                logging.error(f"Checker API logic error: {data}")
+        else:
+            logging.error(f"Checker API HTTP error: {resp.status_code}")
+    except Exception as e:
+        logging.error(f"Checker API request failed: {e}")
+    return {}
+
 async def check_telegram_numbers(phone_numbers: list) -> dict:
     """
-    টেলিগ্রাম চেকার এপিআই দিয়ে নম্বরগুলোতে টেলিগ্রাম অ্যাকাউন্ট আছে কি না চেক করার মেথড।
-    + থাকুক বা না থাকুক, স্বয়ংক্রিয় ব্যাচিং (২০টি করে চাঙ্ক) করে নির্ভুলভাবে ডাটা রিটার্ন করে।
+    টেলিগ্রাম চেকার এপিআই মেথড। নন-ব্লকিং থ্রেডের মাধ্যমে 
+    ২০টি করে ব্যাচে পাঠিয়ে ১০০% সঠিক স্ট্যাটাস নিশ্চিত করে।
     """
     if not phone_numbers:
         return {}
@@ -50,35 +73,16 @@ async def check_telegram_numbers(phone_numbers: list) -> dict:
         return {}
 
     all_results = {}
-    chunk_size = 20  # API টাইমআউট রোধে প্রতি ব্যাচে ২০টি করে নম্বর পাঠানো হয়
-    session = await get_session()
+    chunk_size = 20
 
     for i in range(0, len(unique_numbers), chunk_size):
         chunk = unique_numbers[i:i + chunk_size]
-        payload = {
-            "auth": CHECKER_AUTH,
-            "api_key": CHECKER_API_KEY,
-            "phone_numbers": chunk
-        }
-        try:
-            # content_type=None দেওয়া হয়েছে যাতে চেকার যে হেডারেই JSON দিক তা ক্র্যাশ না করে
-            async with session.get(CHECKER_URL, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-                if resp.status == 200:
-                    data = await resp.json(content_type=None)
-                    if str(data.get("status")) == "200":
-                        res_obj = data.get("result_obj") or {}
-                        # + সহ এবং + ছাড়া উভয় ফরম্যাটে সেভ করা হচ্ছে যাতে handlers.py থেকে ১০০% ম্যাচ পাওয়া যায়
-                        for k, v in res_obj.items():
-                            clean_k = re.sub(r'[^\d]', '', str(k))
-                            all_results[str(k)] = v
-                            all_results[f"+{clean_k}"] = v
-                            all_results[clean_k] = v
-                    else:
-                        logging.error(f"Checker API error on chunk: {data}")
-                else:
-                    logging.error(f"Checker API HTTP error: {resp.status}")
-        except Exception as e:
-            logging.error(f"Checker API request failed on chunk: {e}")
+        res_obj = await asyncio.to_thread(_sync_check_chunk, chunk)
+        for k, v in res_obj.items():
+            clean_k = re.sub(r'[^\d]', '', str(k))
+            all_results[str(k)] = v
+            all_results[f"+{clean_k}"] = v
+            all_results[clean_k] = v
 
     return all_results
 
@@ -184,9 +188,6 @@ class HeroSMSClient:
             return res
 
         return res
-
-    async def buy_colombia_telegram_number(self, max_price: float = 0.135, phone_exception: str = "57350", operator: str = None):
-        return await self.get_number(service="tg", country=33, max_price=max_price, phone_exception=phone_exception, operator=operator)
 
     async def get_status(self, activation_id: str):
         return await self._get("getStatus", id=str(activation_id))
