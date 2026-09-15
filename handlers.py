@@ -41,6 +41,18 @@ fresh_batches_cache = {}
 
 MENU_BUTTONS = ["Bulk Buy Numbers", "Active Numbers"]
 
+def cleanup_expired_cache():
+    """৩০ মিনিটের বেশি পুরোনো ক্যাশ স্বয়ংক্রিয়ভাবে মুছে র‍্যাম সম্পূর্ণ পরিষ্কার রাখে"""
+    now = time.time()
+    # ওটিপি ট্র্যাকিং ক্যাশ ক্লিনআপ (২০ মিনিট)
+    for k in list(processed_otps.keys()):
+        if now - processed_otps[k] > 1200:
+            del processed_otps[k]
+    # ফ্রেশ ব্যাচ ক্যাশ ক্লিনআপ (৩০ মিনিট)
+    for b_id in list(fresh_batches_cache.keys()):
+        if now - fresh_batches_cache[b_id].get("created_at", 0) > 1800:
+            del fresh_batches_cache[b_id]
+
 def get_colombia_operator(phone: str) -> str:
     clean = str(phone).lstrip("+").strip()
     if clean.startswith("57"):
@@ -60,13 +72,18 @@ def get_colombia_operator(phone: str) -> str:
 
 def format_otp_text(phone: str, code: str) -> str:
     """
-    Number bold, কলম্বিয়ার ফ্ল্যাগ, নম্বর mono,
-    OTP-র পরে স্পেস ও উইং ইমোজি (🪽)
+    ১ম ছবির মতো হুবহু ফরম্যাট:
+    Number: 573204676796 🇨🇴
+
+    Code: 24438 (spoiler) | MAH!N 🪽
     """
     clean_phone = str(phone).lstrip("+").strip()
     safe_phone = html.escape(clean_phone)
     safe_code = html.escape(str(code).strip())
-    return f"<b>Number:</b> 🇨🇴 <code>+{safe_phone}</code>\n\n<b>OTP:</b> <code>{safe_code}</code> 🪽 | <b>MAH!N</b>"
+    return (
+        f"<b>Number:</b> <code>{safe_phone}</code> 🇨🇴\n\n"
+        f"<b>Code:</b> <tg-spoiler>{safe_code}</tg-spoiler> | <b>MAH!N</b> 🪽"
+    )
 
 def format_tg_status(raw_status: any) -> dict:
     if raw_status is None:
@@ -175,11 +192,7 @@ async def handle_herosms_webhook(request: web.Request):
         return web.Response(text="OK", status=200)
 
     processed_otps[cache_key] = time.time()
-
-    now = time.time()
-    for k in list(processed_otps.keys()):
-        if now - processed_otps[k] > 1200:
-            del processed_otps[k]
+    cleanup_expired_cache()
 
     try:
         row = await db.get_activation_user(aid)
@@ -458,7 +471,7 @@ async def cmd_retry_number(message: Message):
             clean_p = str(phone_num).lstrip("+")
             await message.answer(
                 f"Retry mode activated.\n\n"
-                f"<b>Number:</b> 🇨🇴 <code>+{clean_p}</code>\n"
+                f"<b>Number:</b> <code>{clean_p}</code> 🇨🇴\n"
                 f"ID: <code>{aid_to_retry}</code>\n\n"
                 f"Please click 'Resend SMS' in Telegram. New code will be delivered automatically.",
                 parse_mode=ParseMode.HTML
@@ -771,6 +784,7 @@ async def cb_check_sms(callback: CallbackQuery):
             code = res.split(":", 1)[1]
             text = format_otp_text(phone, code)
             processed_otps[f"{aid}:{code}"] = time.time()
+            cleanup_expired_cache()
             await callback.message.edit_text(text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
         elif res.startswith("STATUS_WAIT_CODE"):
             await callback.answer("Still waiting for SMS...", show_alert=True)
@@ -891,7 +905,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             f"Total: {len(purchased)} numbers (tap any number to copy)\n"
         ]
 
-        # ফ্রেশ নম্বরের লিস্ট (৩নং ছবির মতো একটার পর এক লাইন ফাঁকা থাকবে)
+        # ৩নং ছবির মতো ফ্রেশ নম্বরের মাঝে এক লাইন করে ফাঁকা থাকবে
         if fresh_list:
             lines.append(f"🟢 <b>Fresh Numbers ({len(fresh_list)}):</b>")
             for idx, item in enumerate(fresh_list, 1):
@@ -914,10 +928,14 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         final = "\n".join(lines)
         batch_id = str(uuid.uuid4())[:8]
         fresh_phones = [x["phone"] for x in fresh_list]
+        
+        # ক্যাশে টাইমস্ট্যাম্প যুক্ত করে মেমোরি পরিষ্কার রাখা
         fresh_batches_cache[batch_id] = {
             "summary": final,
-            "fresh_phones": fresh_phones
+            "fresh_phones": fresh_phones,
+            "created_at": time.time()
         }
+        cleanup_expired_cache()
 
         reply_markup = kb.bulk_result_menu(batch_id, len(fresh_list))
 
@@ -934,6 +952,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 # --- ফ্রেশ নাম্বার বাটন হ্যান্ডলার ---
 @router.callback_query(F.data.startswith("show_fresh_"))
 async def cb_show_fresh_numbers(callback: CallbackQuery):
+    cleanup_expired_cache()
     batch_id = callback.data[len("show_fresh_"):]
     batch_data = fresh_batches_cache.get(batch_id)
 
@@ -950,6 +969,7 @@ async def cb_show_fresh_numbers(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("back_bulk_"))
 async def cb_back_bulk(callback: CallbackQuery):
+    cleanup_expired_cache()
     batch_id = callback.data[len("back_bulk_"):]
     batch_data = fresh_batches_cache.get(batch_id)
 
