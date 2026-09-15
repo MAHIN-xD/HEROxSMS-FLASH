@@ -3,6 +3,7 @@ import logging
 import html
 import time
 import re
+import uuid
 from datetime import datetime, timezone, timedelta
 from aiohttp import web
 from aiogram import Router, F
@@ -36,6 +37,7 @@ DEFAULT_EXCLUDE_LIST = ["57350"]
 DEFAULT_OPERATOR = "any"
 
 processed_otps = {}
+fresh_batches_cache = {}
 
 MENU_BUTTONS = ["Bulk Buy Numbers", "Active Numbers"]
 
@@ -57,35 +59,41 @@ def get_colombia_operator(phone: str) -> str:
     return "Unknown"
 
 def format_otp_text(phone: str, code: str) -> str:
+    """নম্বর ও ওটিপির মাঝে \n ব্যবহার করে নিচে এক লাইন ফাঁকা এবং কলম্বিয়া ফ্ল্যাগ যুক্ত ফরম্যাট"""
     clean_phone = str(phone).lstrip("+").strip()
     safe_phone = html.escape(clean_phone)
     safe_code = html.escape(str(code))
-    return f"Number: <code>+{safe_phone}</code>\nOTP: <code>{safe_code}</code> | <b>MAH!N</b>"
+    return f"Number: 🇨🇴 <b>+{safe_phone}</b>\n\nOTP: <code>{safe_code}</code> | <b>MAH!N</b>"
 
-def format_tg_status(raw_status: str) -> dict:
+def format_tg_status(raw_status: any) -> dict:
     """
-    Phone_number_banned, Phone_number_occupied ইত্যাদি ফিল্টার করে 
-    সুন্দর ইমোজি ব্যাজ ও সর্টিং প্রায়োরিটিতে কনভার্ট করার হেল্পার
+    সঠিক স্ট্যাটাস ম্যাপিং। 
+    'unregistered' বা 'not_registered'-কে আগে চেক করা হয়েছে যাতে false positive না ঘটে।
     """
-    st = str(raw_status).strip().lower()
-    
-    # Fresh / Unregistered (Priority 1)
-    if any(w in st for w in ["unregistered", "not_registered", "fresh", "free", "available", "valid"]):
+    if isinstance(raw_status, dict):
+        st = str(raw_status.get("status") or raw_status.get("result") or raw_status.get("msg") or raw_status).strip().lower()
+    elif isinstance(raw_status, bool):
+        st = "occupied" if raw_status else "fresh"
+    else:
+        st = str(raw_status).strip().lower()
+
+    # ১. Fresh / Unregistered
+    if any(w in st for w in ["unregistered", "not_registered", "not registered", "fresh", "free", "available", "valid", "clean", "false"]):
         return {"badge": "✅ Fresh", "priority": 1, "is_fresh": True}
     
-    # Locked / 2FA / Flood (Priority 2)
-    elif any(w in st for w in ["flood", "locked", "wait", "restricted", "2fa"]):
+    # ২. Locked / Flood / 2FA
+    elif any(w in st for w in ["flood", "locked", "lock", "wait", "restricted", "2fa", "password", "has_password"]):
         return {"badge": "🔒 Locked", "priority": 2, "is_fresh": False}
     
-    # Occupied / Registered (Priority 3)
-    elif any(w in st for w in ["occupied", "registered", "taken", "used"]):
-        return {"badge": "❌ Occupied", "priority": 3, "is_fresh": False}
-    
-    # Banned (Priority 4)
-    elif any(w in st for w in ["banned", "ban"]):
-        return {"badge": "🚫 Banned", "priority": 4, "is_fresh": False}
-    
-    # অন্যান্য যেকোনো স্ট্যাটাস
+    # ৩. Banned
+    elif any(w in st for w in ["banned", "ban", "blocked"]):
+        return {"badge": "🚫 Banned", "priority": 3, "is_fresh": False}
+
+    # ৪. Occupied / Registered
+    elif any(w in st for w in ["occupied", "registered", "taken", "used", "true"]):
+        return {"badge": "❌ Occupied", "priority": 4, "is_fresh": False}
+
+    # অন্যান্য
     else:
         clean = re.sub(r'phone_number_', '', st, flags=re.IGNORECASE).replace('_', ' ').strip().title()
         return {"badge": f"⚠️ {clean or 'Unknown'}", "priority": 5, "is_fresh": False}
@@ -286,13 +294,12 @@ async def cmd_api(message: Message, state: FSMContext):
     )
     await state.set_state(BotStates.waiting_for_api_key)
 
-# --- /ck কমান্ড (গ্রিন টিক ফ্রেশ সবার উপরে, নিচে রেড/লকড/ব্যান্ড) ---
+# --- /ck কমান্ড ---
 @router.message(Command("ck", "check"))
 async def cmd_check_numbers(message: Message):
     if not await is_allowed(message.from_user.id): return
     
     raw_args = message.text[len("/ck"):].strip() if message.text.startswith("/ck") else message.text[len("/check"):].strip()
-    
     tokens = re.split(r'[\s,;\n]+', raw_args)
     found_numbers = []
     
@@ -329,9 +336,7 @@ async def cmd_check_numbers(message: Message):
                 "is_fresh": info["is_fresh"]
             })
 
-        # ১. গ্রিন টিক (Fresh) নম্বরগুলো সবার উপরে
         fresh_list = [x for x in parsed_items if x["is_fresh"]]
-        # ২. বাকিগুলো (Locked, Occupied, Banned) নিচে
         other_list = [x for x in parsed_items if not x["is_fresh"]]
         other_list.sort(key=lambda x: x["priority"])
 
@@ -340,13 +345,13 @@ async def cmd_check_numbers(message: Message):
         if fresh_list:
             lines.append(f"🟢 <b>Fresh Numbers ({len(fresh_list)}):</b>")
             for idx, item in enumerate(fresh_list, 1):
-                lines.append(f"{idx}. <code>{item['number']}</code> — <b>{item['badge']}</b>")
-            lines.append("")  # হালকা গ্যাপ
+                lines.append(f"{idx}. <b>{item['number']}</b> — <b>{item['badge']}</b>")
+            lines.append("")
 
         if other_list:
             lines.append(f"🔻 <b>Unavailable / Occupied ({len(other_list)}):</b>")
             for idx, item in enumerate(other_list, 1):
-                lines.append(f"{idx}. <code>{item['number']}</code> — <b>{item['badge']}</b>")
+                lines.append(f"{idx}. <b>{item['number']}</b> — <b>{item['badge']}</b>")
 
         final_text = "\n".join(lines)
         if len(final_text) > 4000:
@@ -445,19 +450,19 @@ async def cmd_ok_finish(message: Message):
                         if k.startswith(f"{aid}:"):
                             del processed_otps[k]
                     op = get_colombia_operator(clean_phone)
-                    finished_lines.append(f"• <code>+{clean_phone}</code> ({op}) - Finished ✅")
+                    finished_lines.append(f"• <b>+{clean_phone}</b> ({op}) - Finished ✅")
                 elif isinstance(r, dict) and r.get("status") == "success":
                     await db.delete_activation(aid)
                     for k in list(processed_otps.keys()):
                         if k.startswith(f"{aid}:"):
                             del processed_otps[k]
                     op = get_colombia_operator(clean_phone)
-                    finished_lines.append(f"• <code>+{clean_phone}</code> ({op}) - Finished ✅")
+                    finished_lines.append(f"• <b>+{clean_phone}</b> ({op}) - Finished ✅")
                 else:
                     err = r.get("title", str(r)) if isinstance(r, dict) else str(r)
-                    finished_lines.append(f"• <code>+{clean_phone}</code> - ⚠️ {html.escape(str(err))}")
+                    finished_lines.append(f"• <b>+{clean_phone}</b> - ⚠️ {html.escape(str(err))}")
             except Exception as e:
-                finished_lines.append(f"• <code>+{clean_phone}</code> - Error: {e}")
+                finished_lines.append(f"• <b>+{clean_phone}</b> - Error: {e}")
 
         summary_text = f"<b>✅ Finished Activations ({len(finished_lines)}):</b>\n\n" + "\n".join(finished_lines)
         await message.answer(summary_text, parse_mode=ParseMode.HTML)
@@ -510,7 +515,7 @@ async def cmd_retry_number(message: Message):
             clean_p = str(phone_num).lstrip("+")
             await message.answer(
                 f"Retry mode activated.\n\n"
-                f"Number: <code>+{clean_p}</code>\n"
+                f"Number: 🇨🇴 <b>+{clean_p}</b>\n"
                 f"ID: <code>{aid_to_retry}</code>\n\n"
                 f"Please click 'Resend SMS' in Telegram. New code will be delivered automatically.",
                 parse_mode=ParseMode.HTML
@@ -686,7 +691,7 @@ async def cmd_history(message: Message):
             status_label = "Success" if status_code in ["4", "6"] else ("Cancelled" if status_code == "8" else f"Status {status_code}")
 
             lines.append(
-                f"#{idx} <code>+{phone}</code>\n"
+                f"#{idx} <b>+{phone}</b>\n"
                 f"- OTP: <code>{sms_code}</code>\n"
                 f"- Cost: {cost} USD | Status: {status_label}\n"
                 f"- Date: {date_str}\n"
@@ -726,7 +731,7 @@ async def cmd_cancel_number(message: Message):
             for k in list(processed_otps.keys()):
                 if k.startswith(f"{aid_to_cancel}:"):
                     del processed_otps[k]
-            await message.answer(f"Successfully cancelled <code>+{target.lstrip('+')}</code>. Balance refunded.", parse_mode=ParseMode.HTML)
+            await message.answer(f"Successfully cancelled <b>+{target.lstrip('+')}</b>. Balance refunded.", parse_mode=ParseMode.HTML)
         elif isinstance(cancel_res, str) and "EARLY_CANCEL_DENIED" in cancel_res:
             await message.answer("Cannot cancel within first 2 minutes.")
         else:
@@ -781,7 +786,7 @@ async def cb_check_sms(callback: CallbackQuery):
     else:
         await callback.answer("Error checking status.", show_alert=True)
 
-# --- বাল্ক বাই (গ্রিন টিক ফ্রেশ উপরে, নিচে অন্যগুলো) ---
+# --- বাল্ক বাই ---
 @router.message(F.text == "Bulk Buy Numbers")
 async def text_bulk_buy(message: Message, state: FSMContext):
     if not await is_allowed(message.from_user.id): return
@@ -837,7 +842,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
                 try:
                     display_lines = purchased[-10:]
                     lines = "\n".join(
-                        f"{n}. <code>+{p}</code> ({get_colombia_operator(p)})" 
+                        f"{n}. <b>+{p}</b> ({get_colombia_operator(p)})" 
                         for n, p in enumerate(display_lines, len(purchased)-len(display_lines)+1)
                     )
                     upd_text = f"Buying {amount} numbers... ({len(purchased)}/{amount})\n\n{lines}"
@@ -882,33 +887,76 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 
         lines = [
             f"🎉 <b>Bulk Order Completed!</b>",
-            f"Total: {len(purchased)} numbers (tap any number to copy)\n"
+            f"Total: {len(purchased)} numbers\n"
         ]
 
         if fresh_list:
             lines.append(f"🟢 <b>Fresh Numbers ({len(fresh_list)}):</b>")
             for idx, item in enumerate(fresh_list, 1):
-                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — <b>{item['badge']}</b>")
+                lines.append(f"{idx}. <b>+{item['phone']}</b> ({item['operator']}) — <b>{item['badge']}</b>")
             lines.append("")
 
         if other_list:
             lines.append(f"🔻 <b>Unavailable / Occupied ({len(other_list)}):</b>")
             for idx, item in enumerate(other_list, 1):
-                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — <b>{item['badge']}</b>")
+                lines.append(f"{idx}. <b>+{item['phone']}</b> ({item['operator']}) — <b>{item['badge']}</b>")
             lines.append("")
 
         lines.append("Waiting for OTPs...")
 
         final = "\n".join(lines)
+        batch_id = str(uuid.uuid4())[:8]
+        fresh_phones = [x["phone"] for x in fresh_list]
+        fresh_batches_cache[batch_id] = {
+            "summary": final,
+            "fresh_phones": fresh_phones
+        }
+
+        reply_markup = kb.bulk_result_menu(batch_id, len(fresh_list))
+
         if len(final) > 4000:
             for part in [final[j:j+4000] for j in range(0, len(final), 4000)]:
                 await message.answer(part, parse_mode=ParseMode.HTML)
             try: await status_msg.delete()
             except: pass
         else:
-            await status_msg.edit_text(final, parse_mode=ParseMode.HTML)
+            await status_msg.edit_text(final, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
     else:
         await status_msg.edit_text("Could not purchase any numbers.")
+
+# --- ফ্রেশ নাম্বার বাটন হ্যান্ডলার (৩য় ছবির মতো কপি করার জন্য) ---
+@router.callback_query(F.data.startswith("show_fresh_"))
+async def cb_show_fresh_numbers(callback: CallbackQuery):
+    batch_id = callback.data[len("show_fresh_"):]
+    batch_data = fresh_batches_cache.get(batch_id)
+
+    if not batch_data or not batch_data.get("fresh_phones"):
+        await callback.answer("No fresh numbers found or session expired.", show_alert=True)
+        return
+
+    fresh_phones = batch_data["fresh_phones"]
+    await callback.message.edit_text(
+        f"🟢 <b>Fresh Numbers ({len(fresh_phones)})</b>\n<i>যেকোনো নম্বরে ট্যাপ করলেই সরাসরি কপি হয়ে যাবে:</i>",
+        reply_markup=kb.fresh_numbers_menu(fresh_phones, batch_id),
+        parse_mode=ParseMode.HTML
+    )
+
+@router.callback_query(F.data.startswith("back_bulk_"))
+async def cb_back_bulk(callback: CallbackQuery):
+    batch_id = callback.data[len("back_bulk_"):]
+    batch_data = fresh_batches_cache.get(batch_id)
+
+    if not batch_data:
+        await callback.answer("Session expired.", show_alert=True)
+        return
+
+    summary = batch_data["summary"]
+    fresh_count = len(batch_data.get("fresh_phones", []))
+    await callback.message.edit_text(
+        summary,
+        reply_markup=kb.bulk_result_menu(batch_id, fresh_count),
+        parse_mode=ParseMode.HTML
+    )
 
 # --- অ্যাক্টিভ নাম্বার লিস্ট ---
 @router.message(F.text == "Active Numbers")
