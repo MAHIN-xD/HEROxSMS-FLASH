@@ -1,6 +1,7 @@
 import aiohttp
 import json
 import logging
+import re
 from datetime import datetime, timezone
 
 BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
@@ -23,48 +24,63 @@ async def get_session() -> aiohttp.ClientSession:
     global _session_pool
     if _session_pool is None or _session_pool.closed:
         connector = aiohttp.TCPConnector(limit=100, keepalive_timeout=60, enable_cleanup_closed=True)
-        timeout = aiohttp.ClientTimeout(total=15)
+        timeout = aiohttp.ClientTimeout(total=20)
         _session_pool = aiohttp.ClientSession(connector=connector, headers=HEADERS, timeout=timeout)
     return _session_pool
 
 async def check_telegram_numbers(phone_numbers: list) -> dict:
     """
-    টেলিগ্রাম চেকার এপিআই দিয়ে নম্বরগুলোতে টেলিগ্রাম অ্যাকাউন্ট আছে কি না চেক করার ফাংশন
+    টেলিগ্রাম চেকার এপিআই দিয়ে নম্বরগুলোতে টেলিগ্রাম অ্যাকাউন্ট আছে কি না চেক করার মেথড।
+    + থাকুক বা না থাকুক, স্বয়ংক্রিয় ব্যাচিং (২০টি করে চাঙ্ক) করে নির্ভুলভাবে ডাটা রিটার্ন করে।
     """
     if not phone_numbers:
         return {}
 
-    formatted_numbers = []
+    unique_numbers = []
+    seen = set()
     for p in phone_numbers:
-        clean = str(p).strip().lstrip("+")
-        if clean:
-            formatted_numbers.append(f"+{clean}")
+        clean = re.sub(r'[^\d]', '', str(p))
+        if 7 <= len(clean) <= 16:
+            formatted = f"+{clean}"
+            if formatted not in seen:
+                seen.add(formatted)
+                unique_numbers.append(formatted)
 
-    if not formatted_numbers:
+    if not unique_numbers:
         return {}
 
-    payload = {
-        "auth": CHECKER_AUTH,
-        "api_key": CHECKER_API_KEY,
-        "phone_numbers": formatted_numbers
-    }
+    all_results = {}
+    chunk_size = 20  # API টাইমআউট রোধে প্রতি ব্যাচে ২০টি করে নম্বর পাঠানো হয়
+    session = await get_session()
 
-    try:
-        session = await get_session()
-        # Checker API GET মেথডের সাথে JSON পেলোড গ্রহণ করে
-        async with session.get(CHECKER_URL, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                if str(data.get("status")) == "200":
-                    return data.get("result_obj") or {}
+    for i in range(0, len(unique_numbers), chunk_size):
+        chunk = unique_numbers[i:i + chunk_size]
+        payload = {
+            "auth": CHECKER_AUTH,
+            "api_key": CHECKER_API_KEY,
+            "phone_numbers": chunk
+        }
+        try:
+            # content_type=None দেওয়া হয়েছে যাতে চেকার যে হেডারেই JSON দিক তা ক্র্যাশ না করে
+            async with session.get(CHECKER_URL, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    if str(data.get("status")) == "200":
+                        res_obj = data.get("result_obj") or {}
+                        # + সহ এবং + ছাড়া উভয় ফরম্যাটে সেভ করা হচ্ছে যাতে handlers.py থেকে ১০০% ম্যাচ পাওয়া যায়
+                        for k, v in res_obj.items():
+                            clean_k = re.sub(r'[^\d]', '', str(k))
+                            all_results[str(k)] = v
+                            all_results[f"+{clean_k}"] = v
+                            all_results[clean_k] = v
+                    else:
+                        logging.error(f"Checker API error on chunk: {data}")
                 else:
-                    logging.error(f"Checker API error response: {data}")
-            else:
-                logging.error(f"Checker API HTTP error: {resp.status}")
-    except Exception as e:
-        logging.error(f"Checker API request failed: {e}")
+                    logging.error(f"Checker API HTTP error: {resp.status}")
+        except Exception as e:
+            logging.error(f"Checker API request failed on chunk: {e}")
 
-    return {}
+    return all_results
 
 class HeroSMSClient:
     def __init__(self, api_key: str):
@@ -168,6 +184,9 @@ class HeroSMSClient:
             return res
 
         return res
+
+    async def buy_colombia_telegram_number(self, max_price: float = 0.135, phone_exception: str = "57350", operator: str = None):
+        return await self.get_number(service="tg", country=33, max_price=max_price, phone_exception=phone_exception, operator=operator)
 
     async def get_status(self, activation_id: str):
         return await self._get("getStatus", id=str(activation_id))
