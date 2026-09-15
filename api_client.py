@@ -3,7 +3,8 @@ import asyncio
 import json
 import logging
 import re
-import requests
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 
 BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
@@ -31,30 +32,43 @@ async def get_session() -> aiohttp.ClientSession:
     return _session_pool
 
 def _sync_check_chunk(chunk_numbers: list) -> dict:
-    """স্যাম্পল ফাইলের মতো requests.get দিয়ে হুবহু কল করার সিঙ্ক মেথড"""
+    """
+    পাইথনের বিল্ট-ইন urllib দিয়ে রিকোয়েস্ট পাঠানো (আলাদা কোনো ডিপেন্ডেন্সি এরর ছাড়াই চলবে)
+    """
     payload = {
         "auth": CHECKER_AUTH,
         "api_key": CHECKER_API_KEY,
         "phone_numbers": chunk_numbers
     }
     try:
-        resp = requests.get(CHECKER_URL, json=payload, timeout=40)
-        if resp.status_code == 200:
-            data = resp.json()
-            if str(data.get("status")) == "200":
-                return data.get("result_obj") or {}
+        req_data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            CHECKER_URL,
+            data=req_data,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                "Accept": "application/json"
+            },
+            method="GET"
+        )
+        with urllib.request.urlopen(req, timeout=40) as resp:
+            if resp.status == 200:
+                body = resp.read().decode("utf-8")
+                data = json.loads(body)
+                if str(data.get("status")) == "200":
+                    return data.get("result_obj") or {}
+                else:
+                    logging.error(f"Checker API logic error: {data}")
             else:
-                logging.error(f"Checker API logic error: {data}")
-        else:
-            logging.error(f"Checker API HTTP error: {resp.status_code}")
+                logging.error(f"Checker API HTTP error: {resp.status}")
     except Exception as e:
         logging.error(f"Checker API request failed: {e}")
     return {}
 
 async def check_telegram_numbers(phone_numbers: list) -> dict:
     """
-    টেলিগ্রাম চেকার এপিআই মেথড। নন-ব্লকিং থ্রেডের মাধ্যমে 
-    ২০টি করে ব্যাচে পাঠিয়ে ১০০% সঠিক স্ট্যাটাস নিশ্চিত করে।
+    টেলিগ্রাম চেকার এপিআই মেথড। নন-ব্লকিং থ্রেডে ২০টি করে নম্বরের ব্যাচ পাঠায়।
     """
     if not phone_numbers:
         return {}
