@@ -59,7 +59,7 @@ def get_colombia_operator(phone: str) -> str:
     return "Unknown"
 
 def format_otp_text(phone: str, code: str) -> str:
-    """নম্বরের পাশে কলম্বিয়ার পতাকা, বোল্ড নম্বর এবং এক লাইন নিচে ওটিপি ফরম্যাট"""
+    """নম্বর বোল্ড, কলম্বিয়ার পতাকা এবং এক লাইন নিচে ওটিপি ফরম্যাট"""
     clean_phone = str(phone).lstrip("+").strip()
     safe_phone = html.escape(clean_phone)
     safe_code = html.escape(str(code))
@@ -67,8 +67,8 @@ def format_otp_text(phone: str, code: str) -> str:
 
 def format_tg_status(raw_status: any) -> dict:
     """
-    শতভাগ নিখুঁত স্ট্যাটাস ম্যাপিং। 
-    NOT_BANNED বা NOT_OCCUPIED যেন কোনোভাবেই ভুল ব্যান না দেখায় তার লজিক।
+    শতভাগ নিখুঁত স্ট্যাটাস ম্যাপিং।
+    unoccupied এবং unregistered সবার আগে চেক করা হয়।
     """
     if raw_status is None:
         return {"badge": "⚠️ Check Failed", "priority": 5, "is_fresh": False, "is_error": True}
@@ -76,23 +76,23 @@ def format_tg_status(raw_status: any) -> dict:
     if isinstance(raw_status, dict):
         st = str(raw_status.get("status") or raw_status.get("result") or raw_status.get("msg") or raw_status).strip().lower()
     elif isinstance(raw_status, bool):
-        st = "occupied" if raw_status else "fresh"
+        st = "occupied" if raw_status else "unoccupied"
     else:
         st = str(raw_status).strip().lower()
 
-    # নেটওয়ার্ক বা এপিআই এরর
-    if "api_error" in st or "check_failed" in st or "unknown" in st or not st:
+    if "api_error" in st or "check_failed" in st or not st:
         return {"badge": "⚠️ Check Failed", "priority": 5, "is_fresh": False, "is_error": True}
 
-    # ১. Fresh / Unregistered (যেসব নম্বরে একাউন্ট খোলা নেই)
+    # ১. Fresh / Unregistered / Unoccupied (টেলিগ্রাম খোলা নেই এমন নম্বর)
     fresh_signals = [
+        "unoccupied", "phone_number_unoccupied",
         "unregistered", "not_registered", "not registered", "non_registered",
         "not_occupied", "not occupied", "free", "fresh", "available",
         "ready", "allow", "ok", "valid", "clean", "false", "0",
         "no_account", "no account", "does_not_exist", "not_exists"
     ]
     if any(w in st for w in fresh_signals):
-        # যদি "not_banned" থাকে তবুও সেটা ফ্রেশ
+        # যদি "not_banned" থাকে তবে সেটাও ফ্রেশ
         if "banned" in st and not any(neg in st for neg in ["not", "un", "no", "non", "false"]):
             return {"badge": "🚫 Banned", "priority": 4, "is_fresh": False, "is_error": False}
         return {"badge": "✅ Fresh", "priority": 1, "is_fresh": True, "is_error": False}
@@ -102,12 +102,12 @@ def format_tg_status(raw_status: any) -> dict:
     if any(w in st for w in locked_signals):
         return {"badge": "🔒 Locked", "priority": 2, "is_fresh": False, "is_error": False}
 
-    # ৩. Occupied / Registered (শুধুমাত্র নেগেটিভ শব্দ না থাকলে)
+    # ৩. Registered / Occupied
     occupied_signals = ["occupied", "registered", "taken", "used", "true", "1"]
     if any(w in st for w in occupied_signals) and not any(neg in st for neg in ["not", "un", "no", "non", "false"]):
         return {"badge": "❌ Registered", "priority": 3, "is_fresh": False, "is_error": False}
 
-    # ৪. Banned (শুধুমাত্র নেগেটিভ শব্দ না থাকলে)
+    # ৪. Banned
     banned_signals = ["banned", "ban", "blocked"]
     if any(w in st for w in banned_signals) and not any(neg in st for neg in ["not", "un", "no", "non", "without", "false"]):
         return {"badge": "🚫 Banned", "priority": 4, "is_fresh": False, "is_error": False}
@@ -791,7 +791,7 @@ async def cb_check_sms(callback: CallbackQuery):
     else:
         await callback.answer("Error checking status.", show_alert=True)
 
-# --- বাল্ক বাই (গ্রিন টিক ফ্রেশ নম্বর সবার উপরে, নিচে অপশন) ---
+# --- বাল্ক বাই ---
 @router.message(F.text == "Bulk Buy Numbers")
 async def text_bulk_buy(message: Message, state: FSMContext):
     if not await is_allowed(message.from_user.id): return
