@@ -59,17 +59,12 @@ def get_colombia_operator(phone: str) -> str:
     return "Unknown"
 
 def format_otp_text(phone: str, code: str) -> str:
-    """নম্বর ও ওটিপির মাঝে \n ব্যবহার করে নিচে এক লাইন ফাঁকা এবং কলম্বিয়া ফ্ল্যাগ যুক্ত ফরম্যাট"""
     clean_phone = str(phone).lstrip("+").strip()
     safe_phone = html.escape(clean_phone)
     safe_code = html.escape(str(code))
     return f"Number: 🇨🇴 <b>+{safe_phone}</b>\n\nOTP: <code>{safe_code}</code> | <b>MAH!N</b>"
 
 def format_tg_status(raw_status: any) -> dict:
-    """
-    সঠিক স্ট্যাটাস ম্যাপিং। 
-    'unregistered' বা 'not_registered'-কে আগে চেক করা হয়েছে যাতে false positive না ঘটে।
-    """
     if isinstance(raw_status, dict):
         st = str(raw_status.get("status") or raw_status.get("result") or raw_status.get("msg") or raw_status).strip().lower()
     elif isinstance(raw_status, bool):
@@ -77,23 +72,14 @@ def format_tg_status(raw_status: any) -> dict:
     else:
         st = str(raw_status).strip().lower()
 
-    # ১. Fresh / Unregistered
     if any(w in st for w in ["unregistered", "not_registered", "not registered", "fresh", "free", "available", "valid", "clean", "false"]):
         return {"badge": "✅ Fresh", "priority": 1, "is_fresh": True}
-    
-    # ২. Locked / Flood / 2FA
     elif any(w in st for w in ["flood", "locked", "lock", "wait", "restricted", "2fa", "password", "has_password"]):
         return {"badge": "🔒 Locked", "priority": 2, "is_fresh": False}
-    
-    # ৩. Banned
     elif any(w in st for w in ["banned", "ban", "blocked"]):
         return {"badge": "🚫 Banned", "priority": 3, "is_fresh": False}
-
-    # ৪. Occupied / Registered
     elif any(w in st for w in ["occupied", "registered", "taken", "used", "true"]):
         return {"badge": "❌ Occupied", "priority": 4, "is_fresh": False}
-
-    # অন্যান্য
     else:
         clean = re.sub(r'phone_number_', '', st, flags=re.IGNORECASE).replace('_', ' ').strip().title()
         return {"badge": f"⚠️ {clean or 'Unknown'}", "priority": 5, "is_fresh": False}
@@ -293,74 +279,6 @@ async def cmd_api(message: Message, state: FSMContext):
         parse_mode=ParseMode.HTML
     )
     await state.set_state(BotStates.waiting_for_api_key)
-
-# --- /ck কমান্ড ---
-@router.message(Command("ck", "check"))
-async def cmd_check_numbers(message: Message):
-    if not await is_allowed(message.from_user.id): return
-    
-    raw_args = message.text[len("/ck"):].strip() if message.text.startswith("/ck") else message.text[len("/check"):].strip()
-    tokens = re.split(r'[\s,;\n]+', raw_args)
-    found_numbers = []
-    
-    for t in tokens:
-        cleaned_digits = re.sub(r'[^\d]', '', t)
-        if 7 <= len(cleaned_digits) <= 16:
-            found_numbers.append(f"+{cleaned_digits}")
-
-    unique_numbers = list(dict.fromkeys(found_numbers))
-
-    if not unique_numbers:
-        await message.answer(
-            "ℹ️ <b>ব্যবহারবিধি:</b>\n"
-            "<code>/ck +573001234567</code> অথবা <code>/ck 573001234567</code>\n\n"
-            "যেকোনো পরিমাণ নম্বর স্পেস, কমা বা নতুন লাইনে দিয়ে চেক করুন:\n"
-            "<code>/ck 573001234567 573109876543 +989915756448</code>",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-        status_msg = await message.answer(f"🔍 Checking Telegram status for {len(unique_numbers)} numbers...")
-        results = await check_telegram_numbers(unique_numbers)
-
-        parsed_items = []
-        for formatted_key in unique_numbers:
-            clean = formatted_key.lstrip("+")
-            st = results.get(formatted_key) or results.get(clean) or "Unknown"
-            info = format_tg_status(st)
-            parsed_items.append({
-                "number": formatted_key,
-                "badge": info["badge"],
-                "priority": info["priority"],
-                "is_fresh": info["is_fresh"]
-            })
-
-        fresh_list = [x for x in parsed_items if x["is_fresh"]]
-        other_list = [x for x in parsed_items if not x["is_fresh"]]
-        other_list.sort(key=lambda x: x["priority"])
-
-        lines = [f"<b>📡 Telegram Registration Status ({len(unique_numbers)}):</b>\n"]
-        
-        if fresh_list:
-            lines.append(f"🟢 <b>Fresh Numbers ({len(fresh_list)}):</b>")
-            for idx, item in enumerate(fresh_list, 1):
-                lines.append(f"{idx}. <b>{item['number']}</b> — <b>{item['badge']}</b>")
-            lines.append("")
-
-        if other_list:
-            lines.append(f"🔻 <b>Unavailable / Occupied ({len(other_list)}):</b>")
-            for idx, item in enumerate(other_list, 1):
-                lines.append(f"{idx}. <b>{item['number']}</b> — <b>{item['badge']}</b>")
-
-        final_text = "\n".join(lines)
-        if len(final_text) > 4000:
-            for part in [final_text[j:j+4000] for j in range(0, len(final_text), 4000)]:
-                await message.answer(part, parse_mode=ParseMode.HTML)
-            try: await status_msg.delete()
-            except: pass
-        else:
-            await status_msg.edit_text(final_text, parse_mode=ParseMode.HTML)
 
 # --- /check_operators কমান্ড ---
 @router.message(Command("check_operators", "operators"))
@@ -694,6 +612,62 @@ async def cmd_history(message: Message):
                 f"#{idx} <b>+{phone}</b>\n"
                 f"- OTP: <code>{sms_code}</code>\n"
                 f"- Cost: {cost} USD | Status: {status_label}\n"
+                f"- Date: {date_str}\n"
+            )
+
+        final_text = "\n".join(lines)
+        if len(final_text) > 4000:
+            final_text = final_text[:3990] + "..."
+        await message.answer(final_text, parse_mode=ParseMode.HTML)
+
+# --- /act_history কমান্ড (পুনরুদ্ধারকৃত) ---
+@router.message(Command("activations_history", "act_history"))
+async def cmd_activations_history(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+        user, client = await get_valid_user_client(message.from_user.id)
+        if not user:
+            await message.answer("Please send your HeroSMS API Key first with /api")
+            return
+
+        now = datetime.now(timezone.utc)
+        to_date = now.strftime("%Y-%m-%d")
+        from_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+
+        res = await client.get_activations_history(from_date=from_date, to_date=to_date, size=15)
+
+        if not res or not isinstance(res, dict) or "data" not in res:
+            res_legacy = await client.get_history(size=10)
+            if isinstance(res_legacy, list) and res_legacy:
+                return await cmd_history(message)
+            err = res.get("details") or res.get("title") or str(res) if isinstance(res, dict) else str(res)
+            await message.answer(f"Could not load report: {html.escape(str(err))}")
+            return
+
+        totals = res.get("totals", [])
+        total_sum = 0.0
+        total_success_count = 0
+        if totals and isinstance(totals, list) and isinstance(totals[0], dict):
+            total_sum = float(totals[0].get("sum", 0.0))
+            total_success_count = int(totals[0].get("successCount", 0))
+
+        items = res.get("data", [])
+        lines = [
+            f"📊 <b>Activation Report ({from_date} to {to_date}):</b>\n",
+            f"💰 Total Cost: <b>{total_sum:.4f} USD</b>",
+            f"✅ Total Success: <b>{total_success_count}</b>\n",
+            "-------------------\n"
+        ]
+
+        for idx, item in enumerate(items[:10], 1):
+            phone = html.escape(str(item.get("phone", "Unknown"))).lstrip("+")
+            cost = item.get("cost", 0)
+            date_str = html.escape(str(item.get("createDate", "")))
+            codes = html.escape(str(item.get("moreCodes", "None")))
+
+            lines.append(
+                f"#{idx} <b>+{phone}</b> | {cost} USD\n"
+                f"- Code: <code>{codes}</code>\n"
                 f"- Date: {date_str}\n"
             )
 
@@ -1141,6 +1115,13 @@ async def cmd_view_exclude(message: Message):
         formatted = "\n".join(f"- <code>+{p}</code>" for p in prefixes)
         await message.answer(f"Currently blacklisted prefixes:\n\n{formatted}", parse_mode=ParseMode.HTML)
 
+# --- /reset_exclude কমান্ড (পুনরুদ্ধারকৃত) ---
+@router.message(Command("reset_exclude"))
+async def cmd_reset_exclude(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    await db.set_setting("excluded_prefixes", ",".join(DEFAULT_EXCLUDE_LIST))
+    await message.answer(f"✅ Blacklist reset to default: <code>+{DEFAULT_EXCLUDE_LIST[0]}</code>", parse_mode=ParseMode.HTML)
+
 @router.message(Command("operator"))
 async def cmd_set_operator(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -1159,6 +1140,20 @@ async def cmd_set_operator(message: Message):
     new_op = args[1].strip().lower()
     await db.set_setting("preferred_operator", new_op)
     await message.answer(f"Preferred operator set to: {new_op}")
+
+# --- /operator_list কমান্ড (পুনরুদ্ধারকৃত) ---
+@router.message(Command("operator_list"))
+async def cmd_view_operator(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    current_op = await get_preferred_operator_str()
+    await message.answer(f"📡 Current operator setting: <b>{current_op}</b>", parse_mode=ParseMode.HTML)
+
+# --- /reset_operator কমান্ড (পুনরুদ্ধারকৃত) ---
+@router.message(Command("reset_operator"))
+async def cmd_reset_operator(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    await db.set_setting("preferred_operator", DEFAULT_OPERATOR)
+    await message.answer(f"✅ Operator setting reset to default: <b>{DEFAULT_OPERATOR}</b>", parse_mode=ParseMode.HTML)
 
 @router.message(Command("admin"))
 async def cmd_admin(message: Message):
