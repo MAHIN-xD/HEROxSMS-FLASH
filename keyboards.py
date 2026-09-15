@@ -1,11 +1,6 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
-def to_bold_digits(text: str) -> str:
-    """সংখ্যার ডিজিটগুলোকে টেলিগ্রাম বাটনে বোল্ড দেখানোর ইউনিকোড কনভার্টার"""
-    bold_map = str.maketrans("0123456789", "𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗")
-    return str(text).translate(bold_map)
-
 def main_reply_menu() -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
     b.button(text="Bulk Buy Numbers")
@@ -55,15 +50,14 @@ def active_numbers_menu(activations: list, page: int = 0, per_page: int = 10) ->
     return b.as_markup()
 
 def otp_copy_menu(otp_code: str) -> InlineKeyboardMarkup:
-    """বাটনে বোল্ড হরফে ওটিপি কোড থাকবে এবং ট্যাপ করলেই র ওটিপি কপি হবে"""
+    """বাটনে শুধু ওটিপি কোড থাকবে, কোনো বাড়তি লেখা থাকবে না"""
     b = InlineKeyboardBuilder()
-    raw_code = str(otp_code).strip()
-    bold_code = to_bold_digits(raw_code)
+    code_str = str(otp_code).strip()
     try:
         from aiogram.types import CopyTextButton
-        b.row(InlineKeyboardButton(text=bold_code, copy_text=CopyTextButton(text=raw_code)))
+        b.row(InlineKeyboardButton(text=code_str, copy_text=CopyTextButton(text=code_str)))
     except ImportError:
-        b.button(text=bold_code, callback_data="noop")
+        b.button(text=code_str, callback_data="noop")
     return b.as_markup()
 
 def bulk_result_menu(batch_id: str, fresh_count: int) -> InlineKeyboardMarkup:
