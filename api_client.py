@@ -3,8 +3,6 @@ import asyncio
 import json
 import logging
 import re
-import urllib.request
-import urllib.error
 from datetime import datetime, timezone
 
 BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
@@ -27,49 +25,48 @@ async def get_session() -> aiohttp.ClientSession:
     global _session_pool
     if _session_pool is None or _session_pool.closed:
         connector = aiohttp.TCPConnector(limit=100, keepalive_timeout=60, enable_cleanup_closed=True)
-        timeout = aiohttp.ClientTimeout(total=20)
+        timeout = aiohttp.ClientTimeout(total=25)
         _session_pool = aiohttp.ClientSession(connector=connector, headers=HEADERS, timeout=timeout)
     return _session_pool
 
-def _sync_check_chunk(chunk_numbers: list) -> dict:
-    """
-    পাইথনের বিল্ট-ইন urllib দিয়ে রিকোয়েস্ট পাঠানো (আলাদা কোনো ডিপেন্ডেন্সি এরর ছাড়াই চলবে)
-    """
+async def _check_single_chunk(session: aiohttp.ClientSession, chunk: list) -> dict:
     payload = {
         "auth": CHECKER_AUTH,
         "api_key": CHECKER_API_KEY,
-        "phone_numbers": chunk_numbers
+        "phone_numbers": chunk
     }
+
+    # মেথড ১: aiohttp GET (স্যাম্পল কোডের মতো সরাসরি কল)
     try:
-        req_data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            CHECKER_URL,
-            data=req_data,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                "Accept": "application/json"
-            },
-            method="GET"
-        )
-        with urllib.request.urlopen(req, timeout=40) as resp:
+        async with session.get(CHECKER_URL, json=payload, timeout=aiohttp.ClientTimeout(total=35)) as resp:
             if resp.status == 200:
-                body = resp.read().decode("utf-8")
-                data = json.loads(body)
-                if str(data.get("status")) == "200":
+                data = await resp.json(content_type=None)
+                if str(data.get("status")) == "200" and "result_obj" in data:
                     return data.get("result_obj") or {}
-                else:
-                    logging.error(f"Checker API logic error: {data}")
-            else:
-                logging.error(f"Checker API HTTP error: {resp.status}")
+                elif str(data.get("status")) != "200":
+                    err_msg = data.get("msg") or data.get("message") or "API Logic Error"
+                    logging.warning(f"Checker API error: {err_msg}")
+                    return {num: f"API_ERROR: {err_msg}" for num in chunk}
     except Exception as e:
-        logging.error(f"Checker API request failed: {e}")
-    return {}
+        logging.warning(f"Checker GET failed: {e}, attempting POST fallback...")
+
+    # মেথড ২: aiohttp POST ফলব্যাক (যদি GET ড্রপ হয়)
+    try:
+        async with session.post(CHECKER_URL, json=payload, timeout=aiohttp.ClientTimeout(total=35)) as resp:
+            if resp.status == 200:
+                data = await resp.json(content_type=None)
+                if str(data.get("status")) == "200" and "result_obj" in data:
+                    return data.get("result_obj") or {}
+                elif str(data.get("status")) != "200":
+                    err_msg = data.get("msg") or data.get("message") or "API Logic Error"
+                    return {num: f"API_ERROR: {err_msg}" for num in chunk}
+    except Exception as e:
+        logging.error(f"Checker POST failed: {e}")
+
+    # কোনো কারণে নেটওয়ার্ক ফেইল হলে যাতে ব্যান না দেখায়
+    return {num: "CHECK_FAILED" for num in chunk}
 
 async def check_telegram_numbers(phone_numbers: list) -> dict:
-    """
-    টেলিগ্রাম চেকার এপিআই মেথড। নন-ব্লকিং থ্রেডে ২০টি করে নম্বরের ব্যাচ পাঠায়।
-    """
     if not phone_numbers:
         return {}
 
@@ -87,11 +84,12 @@ async def check_telegram_numbers(phone_numbers: list) -> dict:
         return {}
 
     all_results = {}
-    chunk_size = 20
+    chunk_size = 15
+    session = await get_session()
 
     for i in range(0, len(unique_numbers), chunk_size):
         chunk = unique_numbers[i:i + chunk_size]
-        res_obj = await asyncio.to_thread(_sync_check_chunk, chunk)
+        res_obj = await _check_single_chunk(session, chunk)
         for k, v in res_obj.items():
             clean_k = re.sub(r'[^\d]', '', str(k))
             all_results[str(k)] = v
