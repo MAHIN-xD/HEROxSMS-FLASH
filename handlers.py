@@ -59,12 +59,20 @@ def get_colombia_operator(phone: str) -> str:
     return "Unknown"
 
 def format_otp_text(phone: str, code: str) -> str:
+    """নম্বরের পাশে কলম্বিয়ার পতাকা, বোল্ড নম্বর এবং এক লাইন নিচে ওটিপি ফরম্যাট"""
     clean_phone = str(phone).lstrip("+").strip()
     safe_phone = html.escape(clean_phone)
     safe_code = html.escape(str(code))
     return f"Number: 🇨🇴 <b>+{safe_phone}</b>\n\nOTP: <code>{safe_code}</code> | <b>MAH!N</b>"
 
 def format_tg_status(raw_status: any) -> dict:
+    """
+    শতভাগ নিখুঁত স্ট্যাটাস ম্যাপিং। 
+    NOT_BANNED বা NOT_OCCUPIED যেন কোনোভাবেই ভুল ব্যান না দেখায় তার লজিক।
+    """
+    if raw_status is None:
+        return {"badge": "⚠️ Check Failed", "priority": 5, "is_fresh": False, "is_error": True}
+
     if isinstance(raw_status, dict):
         st = str(raw_status.get("status") or raw_status.get("result") or raw_status.get("msg") or raw_status).strip().lower()
     elif isinstance(raw_status, bool):
@@ -72,17 +80,40 @@ def format_tg_status(raw_status: any) -> dict:
     else:
         st = str(raw_status).strip().lower()
 
-    if any(w in st for w in ["unregistered", "not_registered", "not registered", "fresh", "free", "available", "valid", "clean", "false"]):
-        return {"badge": "✅ Fresh", "priority": 1, "is_fresh": True}
-    elif any(w in st for w in ["flood", "locked", "lock", "wait", "restricted", "2fa", "password", "has_password"]):
-        return {"badge": "🔒 Locked", "priority": 2, "is_fresh": False}
-    elif any(w in st for w in ["banned", "ban", "blocked"]):
-        return {"badge": "🚫 Banned", "priority": 3, "is_fresh": False}
-    elif any(w in st for w in ["occupied", "registered", "taken", "used", "true"]):
-        return {"badge": "❌ Occupied", "priority": 4, "is_fresh": False}
-    else:
-        clean = re.sub(r'phone_number_', '', st, flags=re.IGNORECASE).replace('_', ' ').strip().title()
-        return {"badge": f"⚠️ {clean or 'Unknown'}", "priority": 5, "is_fresh": False}
+    # নেটওয়ার্ক বা এপিআই এরর
+    if "api_error" in st or "check_failed" in st or "unknown" in st or not st:
+        return {"badge": "⚠️ Check Failed", "priority": 5, "is_fresh": False, "is_error": True}
+
+    # ১. Fresh / Unregistered (যেসব নম্বরে একাউন্ট খোলা নেই)
+    fresh_signals = [
+        "unregistered", "not_registered", "not registered", "non_registered",
+        "not_occupied", "not occupied", "free", "fresh", "available",
+        "ready", "allow", "ok", "valid", "clean", "false", "0",
+        "no_account", "no account", "does_not_exist", "not_exists"
+    ]
+    if any(w in st for w in fresh_signals):
+        # যদি "not_banned" থাকে তবুও সেটা ফ্রেশ
+        if "banned" in st and not any(neg in st for neg in ["not", "un", "no", "non", "false"]):
+            return {"badge": "🚫 Banned", "priority": 4, "is_fresh": False, "is_error": False}
+        return {"badge": "✅ Fresh", "priority": 1, "is_fresh": True, "is_error": False}
+
+    # ২. Locked / Flood / 2FA
+    locked_signals = ["flood", "locked", "lock", "wait", "restricted", "2fa", "password", "has_password"]
+    if any(w in st for w in locked_signals):
+        return {"badge": "🔒 Locked", "priority": 2, "is_fresh": False, "is_error": False}
+
+    # ৩. Occupied / Registered (শুধুমাত্র নেগেটিভ শব্দ না থাকলে)
+    occupied_signals = ["occupied", "registered", "taken", "used", "true", "1"]
+    if any(w in st for w in occupied_signals) and not any(neg in st for neg in ["not", "un", "no", "non", "false"]):
+        return {"badge": "❌ Occupied", "priority": 3, "is_fresh": False, "is_error": False}
+
+    # ৪. Banned (শুধুমাত্র নেগেটিভ শব্দ না থাকলে)
+    banned_signals = ["banned", "ban", "blocked"]
+    if any(w in st for w in banned_signals) and not any(neg in st for neg in ["not", "un", "no", "non", "without", "false"]):
+        return {"badge": "🚫 Banned", "priority": 4, "is_fresh": False, "is_error": False}
+
+    clean = re.sub(r'phone_number_', '', st, flags=re.IGNORECASE).replace('_', ' ').strip().title()
+    return {"badge": f"⚠️ {clean}", "priority": 5, "is_fresh": False, "is_error": False}
 
 async def get_excluded_prefixes_str() -> str:
     saved = await db.get_setting("excluded_prefixes")
@@ -620,7 +651,7 @@ async def cmd_history(message: Message):
             final_text = final_text[:3990] + "..."
         await message.answer(final_text, parse_mode=ParseMode.HTML)
 
-# --- /act_history কমান্ড (পুনরুদ্ধারকৃত) ---
+# --- /act_history কমান্ড ---
 @router.message(Command("activations_history", "act_history"))
 async def cmd_activations_history(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -760,7 +791,7 @@ async def cb_check_sms(callback: CallbackQuery):
     else:
         await callback.answer("Error checking status.", show_alert=True)
 
-# --- বাল্ক বাই ---
+# --- বাল্ক বাই (গ্রিন টিক ফ্রেশ নম্বর সবার উপরে, নিচে অপশন) ---
 @router.message(F.text == "Bulk Buy Numbers")
 async def text_bulk_buy(message: Message, state: FSMContext):
     if not await is_allowed(message.from_user.id): return
@@ -845,18 +876,20 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         for p in purchased:
             op = get_colombia_operator(p)
             formatted_k = f"+{p}"
-            raw_st = check_results.get(formatted_k) or check_results.get(p) or "Checked"
+            raw_st = check_results.get(formatted_k) or check_results.get(p)
             info = format_tg_status(raw_st)
             parsed_items.append({
                 "phone": p,
                 "operator": op,
                 "badge": info["badge"],
                 "priority": info["priority"],
-                "is_fresh": info["is_fresh"]
+                "is_fresh": info["is_fresh"],
+                "is_error": info.get("is_error", False)
             })
 
         fresh_list = [x for x in parsed_items if x["is_fresh"]]
-        other_list = [x for x in parsed_items if not x["is_fresh"]]
+        other_list = [x for x in parsed_items if not x["is_fresh"] and not x.get("is_error")]
+        error_list = [x for x in parsed_items if x.get("is_error")]
         other_list.sort(key=lambda x: x["priority"])
 
         lines = [
@@ -873,6 +906,12 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         if other_list:
             lines.append(f"🔻 <b>Unavailable / Occupied ({len(other_list)}):</b>")
             for idx, item in enumerate(other_list, 1):
+                lines.append(f"{idx}. <b>+{item['phone']}</b> ({item['operator']}) — <b>{item['badge']}</b>")
+            lines.append("")
+
+        if error_list:
+            lines.append(f"⚠️ <b>Check Unverified ({len(error_list)}):</b>")
+            for idx, item in enumerate(error_list, 1):
                 lines.append(f"{idx}. <b>+{item['phone']}</b> ({item['operator']}) — <b>{item['badge']}</b>")
             lines.append("")
 
@@ -1115,7 +1154,7 @@ async def cmd_view_exclude(message: Message):
         formatted = "\n".join(f"- <code>+{p}</code>" for p in prefixes)
         await message.answer(f"Currently blacklisted prefixes:\n\n{formatted}", parse_mode=ParseMode.HTML)
 
-# --- /reset_exclude কমান্ড (পুনরুদ্ধারকৃত) ---
+# --- /reset_exclude কমান্ড ---
 @router.message(Command("reset_exclude"))
 async def cmd_reset_exclude(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -1141,14 +1180,14 @@ async def cmd_set_operator(message: Message):
     await db.set_setting("preferred_operator", new_op)
     await message.answer(f"Preferred operator set to: {new_op}")
 
-# --- /operator_list কমান্ড (পুনরুদ্ধারকৃত) ---
+# --- /operator_list কমান্ড ---
 @router.message(Command("operator_list"))
 async def cmd_view_operator(message: Message):
     if not await is_allowed(message.from_user.id): return
     current_op = await get_preferred_operator_str()
     await message.answer(f"📡 Current operator setting: <b>{current_op}</b>", parse_mode=ParseMode.HTML)
 
-# --- /reset_operator কমান্ড (পুনরুদ্ধারকৃত) ---
+# --- /reset_operator কমান্ড ---
 @router.message(Command("reset_operator"))
 async def cmd_reset_operator(message: Message):
     if not await is_allowed(message.from_user.id): return
