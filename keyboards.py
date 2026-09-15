@@ -50,17 +50,17 @@ def active_numbers_menu(activations: list, page: int = 0, per_page: int = 10) ->
     return b.as_markup()
 
 def otp_copy_menu(otp_code: str) -> InlineKeyboardMarkup:
-    """ওটিপি কোড বাটনে সরাসরি প্রিন্ট থাকবে এবং ক্লিক করলেই ইনস্ট্যান্ট কপি হবে"""
+    """বাটনে শুধু ওটিপি কোড থাকবে, কোনো বাড়তি লেখা থাকবে না"""
     b = InlineKeyboardBuilder()
+    code_str = str(otp_code).strip()
     try:
         from aiogram.types import CopyTextButton
-        b.row(InlineKeyboardButton(text=f"• Copy {otp_code} •", copy_text=CopyTextButton(text=str(otp_code))))
+        b.row(InlineKeyboardButton(text=code_str, copy_text=CopyTextButton(text=code_str)))
     except ImportError:
-        b.button(text=f"{otp_code} 🟢", callback_data="noop")
+        b.button(text=code_str, callback_data="noop")
     return b.as_markup()
 
 def bulk_result_menu(batch_id: str, fresh_count: int) -> InlineKeyboardMarkup:
-    """বাল্ক বাই শেষে ফ্রেশ নম্বর বাটন আকারে দেখার মেনু"""
     b = InlineKeyboardBuilder()
     if fresh_count > 0:
         b.button(text=f"🟢 View Fresh Numbers ({fresh_count})", callback_data=f"show_fresh_{batch_id}")
@@ -68,7 +68,6 @@ def bulk_result_menu(batch_id: str, fresh_count: int) -> InlineKeyboardMarkup:
     return b.as_markup()
 
 def fresh_numbers_menu(fresh_phones: list, batch_id: str) -> InlineKeyboardMarkup:
-    """৩য় ছবির মতো প্রতিটি ফ্রেশ নম্বর আলাদা বাটন আকারে থাকবে এবং ট্যাপ করলেই কপি হবে"""
     b = InlineKeyboardBuilder()
     for idx, phone in enumerate(fresh_phones, 1):
         clean = str(phone).lstrip("+").strip()
