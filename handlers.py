@@ -70,7 +70,6 @@ def format_otp_text(phone: str, code: str) -> str:
     return (
         f"<b>Number:</b> <code>+{safe_phone}</code> 🇨🇴\n\n"
         f"<b>OTP:</b> <tg-spoiler>{safe_code}</tg-spoiler> | <b>MAH!N</b> 🪽\n\n"
-        f"\u200b"
     )
 def format_tg_status(raw_status: any) -> dict:
     if raw_status is None:
