@@ -894,25 +894,25 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 
         lines = [
             f"🎉 <b>Bulk Order Completed!</b>",
-            f"Total: {len(purchased)} numbers\n"
+            f"Total: {len(purchased)} numbers (tap any number to copy)\n"
         ]
 
         if fresh_list:
             lines.append(f"🟢 <b>Fresh Numbers ({len(fresh_list)}):</b>")
             for idx, item in enumerate(fresh_list, 1):
-                lines.append(f"{idx}. <b>+{item['phone']}</b> ({item['operator']}) — <b>{item['badge']}</b>")
+                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — <b>{item['badge']}</b>")
             lines.append("")
 
         if other_list:
             lines.append(f"🔻 <b>Unavailable / Occupied ({len(other_list)}):</b>")
             for idx, item in enumerate(other_list, 1):
-                lines.append(f"{idx}. <b>+{item['phone']}</b> ({item['operator']}) — <b>{item['badge']}</b>")
+                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — <b>{item['badge']}</b>")
             lines.append("")
 
         if error_list:
             lines.append(f"⚠️ <b>Check Unverified ({len(error_list)}):</b>")
             for idx, item in enumerate(error_list, 1):
-                lines.append(f"{idx}. <b>+{item['phone']}</b> ({item['operator']}) — <b>{item['badge']}</b>")
+                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — <b>{item['badge']}</b>")
             lines.append("")
 
         lines.append("Waiting for OTPs...")
@@ -937,7 +937,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
     else:
         await status_msg.edit_text("Could not purchase any numbers.")
 
-# --- ফ্রেশ নাম্বার বাটন হ্যান্ডলার (৩য় ছবির মতো কপি করার জন্য) ---
+# --- ফ্রেশ নাম্বার বাটন হ্যান্ডলার ---
 @router.callback_query(F.data.startswith("show_fresh_"))
 async def cb_show_fresh_numbers(callback: CallbackQuery):
     batch_id = callback.data[len("show_fresh_"):]
