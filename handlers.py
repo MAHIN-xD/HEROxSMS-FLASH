@@ -105,7 +105,7 @@ def format_tg_status(raw_status: any) -> dict:
     # ৩. Occupied / Registered (শুধুমাত্র নেগেটিভ শব্দ না থাকলে)
     occupied_signals = ["occupied", "registered", "taken", "used", "true", "1"]
     if any(w in st for w in occupied_signals) and not any(neg in st for neg in ["not", "un", "no", "non", "false"]):
-        return {"badge": "❌ Occupied", "priority": 3, "is_fresh": False, "is_error": False}
+        return {"badge": "❌ Registered", "priority": 3, "is_fresh": False, "is_error": False}
 
     # ৪. Banned (শুধুমাত্র নেগেটিভ শব্দ না থাকলে)
     banned_signals = ["banned", "ban", "blocked"]
