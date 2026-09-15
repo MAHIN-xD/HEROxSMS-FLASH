@@ -105,12 +105,12 @@ def format_tg_status(raw_status: any) -> dict:
     # ৩. Registered / Occupied
     occupied_signals = ["occupied", "registered", "taken", "used", "true", "1"]
     if any(w in st for w in occupied_signals) and not any(neg in st for neg in ["not", "un", "no", "non", "false"]):
-        return {"badge": "❌ Registered", "priority": 3, "is_fresh": False, "is_error": False}
+        return {"badge": "❌", "priority": 3, "is_fresh": False, "is_error": False}
 
     # ৪. Banned
     banned_signals = ["banned", "ban", "blocked"]
     if any(w in st for w in banned_signals) and not any(neg in st for neg in ["not", "un", "no", "non", "without", "false"]):
-        return {"badge": "🚫 Banned", "priority": 4, "is_fresh": False, "is_error": False}
+        return {"badge": "🚫", "priority": 4, "is_fresh": False, "is_error": False}
 
     clean = re.sub(r'phone_number_', '', st, flags=re.IGNORECASE).replace('_', ' ').strip().title()
     return {"badge": f"⚠️ {clean}", "priority": 5, "is_fresh": False, "is_error": False}
