@@ -61,11 +61,7 @@ def get_colombia_operator(phone: str) -> str:
 def format_otp_text(phone: str, code: str) -> str:
     clean_phone = str(phone).lstrip("+").strip()
     safe_phone = html.escape(clean_phone)
-    safe_code = html.escape(str(code).strip())
-    
-    return (
-        f"🇨🇴 <b> Telegram</b> <b>{safe_phone}</b>\n\n"
-    )
+    return f"🇨🇴 <b>Telegram</b> {safe_phone}"
 def format_tg_status(raw_status: any) -> dict:
     if raw_status is None:
         return {"badge": "⚠️ Check Failed", "priority": 5, "is_fresh": False, "is_error": True}
