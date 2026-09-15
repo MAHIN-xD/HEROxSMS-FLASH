@@ -6,6 +6,11 @@ from datetime import datetime, timezone
 BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
 V1_BASE_URL = "https://hero-sms.com/api/v1"
 
+# Telegram Checker API Credentials
+CHECKER_URL = "http://api.agbots.site:8080/check/"
+CHECKER_AUTH = "user8354"
+CHECKER_API_KEY = "SIGUzg7Xf7euGs8B"
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
@@ -18,9 +23,48 @@ async def get_session() -> aiohttp.ClientSession:
     global _session_pool
     if _session_pool is None or _session_pool.closed:
         connector = aiohttp.TCPConnector(limit=100, keepalive_timeout=60, enable_cleanup_closed=True)
-        timeout = aiohttp.ClientTimeout(total=12)
+        timeout = aiohttp.ClientTimeout(total=15)
         _session_pool = aiohttp.ClientSession(connector=connector, headers=HEADERS, timeout=timeout)
     return _session_pool
+
+async def check_telegram_numbers(phone_numbers: list) -> dict:
+    """
+    টেলিগ্রাম চেকার এপিআই দিয়ে নম্বরগুলোতে টেলিগ্রাম অ্যাকাউন্ট আছে কি না চেক করার ফাংশন
+    """
+    if not phone_numbers:
+        return {}
+
+    formatted_numbers = []
+    for p in phone_numbers:
+        clean = str(p).strip().lstrip("+")
+        if clean:
+            formatted_numbers.append(f"+{clean}")
+
+    if not formatted_numbers:
+        return {}
+
+    payload = {
+        "auth": CHECKER_AUTH,
+        "api_key": CHECKER_API_KEY,
+        "phone_numbers": formatted_numbers
+    }
+
+    try:
+        session = await get_session()
+        # Checker API GET মেথডের সাথে JSON পেলোড গ্রহণ করে
+        async with session.get(CHECKER_URL, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if str(data.get("status")) == "200":
+                    return data.get("result_obj") or {}
+                else:
+                    logging.error(f"Checker API error response: {data}")
+            else:
+                logging.error(f"Checker API HTTP error: {resp.status}")
+    except Exception as e:
+        logging.error(f"Checker API request failed: {e}")
+
+    return {}
 
 class HeroSMSClient:
     def __init__(self, api_key: str):
@@ -90,7 +134,6 @@ class HeroSMSClient:
         return await self._get("getPrices", **params)
 
     async def get_operators(self, country: int = None):
-        """লাইভ অপারেটর তালিকা পাওয়ার মেথড (?action=getOperators)"""
         params = {}
         if country: params["country"] = country
         return await self._get("getOperators", **params)
