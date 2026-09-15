@@ -59,17 +59,16 @@ def get_colombia_operator(phone: str) -> str:
     return "Unknown"
 
 def format_otp_text(phone: str, code: str) -> str:
-    """নম্বর বোল্ড, কলম্বিয়ার পতাকা এবং এক লাইন নিচে ওটিপি ফরম্যাট"""
+    """
+    Number bold, কলম্বিয়ার ফ্ল্যাগ, নম্বর mono,
+    OTP-র পরে স্পেস ও উইং ইমোজি (🪽)
+    """
     clean_phone = str(phone).lstrip("+").strip()
     safe_phone = html.escape(clean_phone)
-    safe_code = html.escape(str(code))
-    return f"Number: 🇨🇴 <b>+{safe_phone}</b>\n\nOTP: <code>{safe_code}</code> | <b>MAH!N</b>"
+    safe_code = html.escape(str(code).strip())
+    return f"<b>Number:</b> 🇨🇴 <code>+{safe_phone}</code>\n\n<b>OTP:</b> <code>{safe_code}</code> 🪽 | <b>MAH!N</b>"
 
 def format_tg_status(raw_status: any) -> dict:
-    """
-    শতভাগ নিখুঁত স্ট্যাটাস ম্যাপিং।
-    unoccupied এবং unregistered সবার আগে চেক করা হয়।
-    """
     if raw_status is None:
         return {"badge": "⚠️ Check Failed", "priority": 5, "is_fresh": False, "is_error": True}
 
@@ -83,7 +82,6 @@ def format_tg_status(raw_status: any) -> dict:
     if "api_error" in st or "check_failed" in st or not st:
         return {"badge": "⚠️ Check Failed", "priority": 5, "is_fresh": False, "is_error": True}
 
-    # ১. Fresh / Unregistered / Unoccupied (টেলিগ্রাম খোলা নেই এমন নম্বর)
     fresh_signals = [
         "unoccupied", "phone_number_unoccupied",
         "unregistered", "not_registered", "not registered", "non_registered",
@@ -92,22 +90,18 @@ def format_tg_status(raw_status: any) -> dict:
         "no_account", "no account", "does_not_exist", "not_exists"
     ]
     if any(w in st for w in fresh_signals):
-        # যদি "not_banned" থাকে তবে সেটাও ফ্রেশ
         if "banned" in st and not any(neg in st for neg in ["not", "un", "no", "non", "false"]):
             return {"badge": "🚫 Banned", "priority": 4, "is_fresh": False, "is_error": False}
         return {"badge": "✅ Fresh", "priority": 1, "is_fresh": True, "is_error": False}
 
-    # ২. Locked / Flood / 2FA
     locked_signals = ["flood", "locked", "lock", "wait", "restricted", "2fa", "password", "has_password"]
     if any(w in st for w in locked_signals):
         return {"badge": "🔒 Locked", "priority": 2, "is_fresh": False, "is_error": False}
 
-    # ৩. Registered / Occupied
     occupied_signals = ["occupied", "registered", "taken", "used", "true", "1"]
     if any(w in st for w in occupied_signals) and not any(neg in st for neg in ["not", "un", "no", "non", "false"]):
         return {"badge": "❌", "priority": 3, "is_fresh": False, "is_error": False}
 
-    # ৪. Banned
     banned_signals = ["banned", "ban", "blocked"]
     if any(w in st for w in banned_signals) and not any(neg in st for neg in ["not", "un", "no", "non", "without", "false"]):
         return {"badge": "🚫", "priority": 4, "is_fresh": False, "is_error": False}
@@ -464,7 +458,7 @@ async def cmd_retry_number(message: Message):
             clean_p = str(phone_num).lstrip("+")
             await message.answer(
                 f"Retry mode activated.\n\n"
-                f"Number: 🇨🇴 <b>+{clean_p}</b>\n"
+                f"<b>Number:</b> 🇨🇴 <code>+{clean_p}</code>\n"
                 f"ID: <code>{aid_to_retry}</code>\n\n"
                 f"Please click 'Resend SMS' in Telegram. New code will be delivered automatically.",
                 parse_mode=ParseMode.HTML
@@ -897,11 +891,11 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             f"Total: {len(purchased)} numbers (tap any number to copy)\n"
         ]
 
+        # ফ্রেশ নম্বরের লিস্ট (৩নং ছবির মতো একটার পর এক লাইন ফাঁকা থাকবে)
         if fresh_list:
             lines.append(f"🟢 <b>Fresh Numbers ({len(fresh_list)}):</b>")
             for idx, item in enumerate(fresh_list, 1):
-                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — <b>{item['badge']}</b>")
-            lines.append("")
+                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — <b>{item['badge']}</b>\n")
 
         if other_list:
             lines.append(f"🔻 <b>Unavailable / Occupied ({len(other_list)}):</b>")
