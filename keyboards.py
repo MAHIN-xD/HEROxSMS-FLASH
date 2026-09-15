@@ -56,7 +56,7 @@ def otp_copy_menu(otp_code: str) -> InlineKeyboardMarkup:
         from aiogram.types import CopyTextButton
         b.row(InlineKeyboardButton(text=f"• Copy {otp_code} •", copy_text=CopyTextButton(text=str(otp_code))))
     except ImportError:
-        b.button(text=f"• Copy {otp_code} •", callback_data="noop")
+        b.button(text=f"{otp_code} 🟢", callback_data="noop")
     return b.as_markup()
 
 def bulk_result_menu(batch_id: str, fresh_count: int) -> InlineKeyboardMarkup:
