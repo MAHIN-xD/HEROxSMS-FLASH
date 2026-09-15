@@ -59,14 +59,9 @@ def get_colombia_operator(phone: str) -> str:
     return "Unknown"
 
 def format_otp_text(phone: str, code: str) -> str:
-    """
-    Number bold, কলম্বিয়ার ফ্ল্যাগ, নম্বর mono,
-    OTP-র পরে স্পেস ও উইং ইমোজি (🪽)
-    """
     clean_phone = str(phone).lstrip("+").strip()
     safe_phone = html.escape(clean_phone)
-    safe_code = html.escape(str(code).strip())
-    return f"<b>🇨🇴 Telegram</b> <code>+{safe_phone}</code>"
+    return f"🇨🇴 <b>Telegram</b> <code>{safe_phone}</code>"
 
 def format_tg_status(raw_status: any) -> dict:
     if raw_status is None:
