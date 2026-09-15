@@ -41,15 +41,6 @@ fresh_batches_cache = {}
 
 MENU_BUTTONS = ["Bulk Buy Numbers", "Active Numbers"]
 
-def cleanup_expired_cache():
-    now = time.time()
-    for k in list(processed_otps.keys()):
-        if now - processed_otps[k] > 1200:
-            del processed_otps[k]
-    for b_id in list(fresh_batches_cache.keys()):
-        if now - fresh_batches_cache[b_id].get("created_at", 0) > 1800:
-            del fresh_batches_cache[b_id]
-
 def get_colombia_operator(phone: str) -> str:
     clean = str(phone).lstrip("+").strip()
     if clean.startswith("57"):
@@ -67,74 +58,12 @@ def get_colombia_operator(phone: str) -> str:
         return "Virgin"
     return "Unknown"
 
-def extract_otp_code(text_or_code: str) -> str:
-    if not text_or_code:
-        return ""
-    match = re.search(r'\b\d{4,6}\b', str(text_or_code))
-    return match.group(0) if match else str(text_or_code).strip()
+def format_otp_text(phone: str, code: str) -> str:
 
-def format_otp_text(phone: str) -> str:
     clean_phone = str(phone).lstrip("+").strip()
     safe_phone = html.escape(clean_phone)
-    return f"🇨🇴 <b>Telegram</b> {safe_phone}"
+    safe_code = html.escape(str(code).strip())
 
-async def handle_herosms_webhook(request: web.Request):
-    data = {}
-    try:
-        if request.method == "POST":
-            try:
-                data = await request.json()
-            except Exception:
-                data = dict(await request.post())
-        if not data:
-            data = dict(request.query)
-    except Exception as e:
-        logging.error(f"Error reading webhook request: {e}")
-        return web.Response(text="Bad Request", status=400)
-
-    aid = str(data.get("activationId") or data.get("id") or data.get("activation_id") or "").strip()
-    raw_code = data.get("code") or data.get("smsCode") or data.get("text") or data.get("sms") or ""
-    code = extract_otp_code(raw_code)
-    direct_phone = data.get("phoneNumber") or data.get("phone") or ""
-
-    if not aid or not code:
-        return web.Response(text="OK", status=200)
-
-    cache_key = f"{aid}:{code}"
-    if cache_key in processed_otps:
-        return web.Response(text="OK", status=200)
-
-    processed_otps[cache_key] = time.time()
-    cleanup_expired_cache()
-
-    try:
-        user_id = None
-        phone = direct_phone
-
-        row = await db.get_activation_user(aid)
-        if row:
-            user_id = row[0]
-            if not phone:
-                phone = row[1]
-        
-        if user_id and phone:
-            bot = get_bot_instance()
-            if bot:
-                msg_text = format_otp_text(phone)
-                try:
-                    await bot.send_message(
-                        user_id,
-                        msg_text,
-                        reply_markup=kb.otp_copy_menu(code),
-                        parse_mode=ParseMode.HTML
-                    )
-                    logging.info(f"Successfully printed OTP for activation {aid} to user {user_id}")
-                except Exception as e:
-                    logging.error(f"Failed to send webhook OTP to user {user_id}: {e}")
-    except Exception as e:
-        logging.error(f"Error processing webhook database lookup for {aid}: {e}")
-
-    return web.Response(text="OK", status=200)
 
 def format_tg_status(raw_status: any) -> dict:
     if raw_status is None:
@@ -212,6 +141,65 @@ async def is_allowed(user_id: int) -> bool:
     if maintenance == "1": return False
     return True
 
+# --- Webhook Handler ---
+async def handle_herosms_webhook(request: web.Request):
+    try:
+        if request.can_read_body:
+            try:
+                data = await request.json()
+            except Exception:
+                data = dict(await request.post())
+        else:
+            data = dict(request.query)
+    except Exception as e:
+        logging.error(f"Error reading webhook request: {e}")
+        return web.Response(text="Bad Request", status=400)
+
+    aid = str(data.get("activationId") or data.get("id") or "").strip()
+    code = str(data.get("code") or "").strip()
+    text_body = data.get("text")
+
+    if not code and text_body:
+        match = re.search(r'\b\d{4,6}\b', str(text_body))
+        if match:
+            code = match.group(0)
+
+    if not aid or not code:
+        return web.Response(text="OK", status=200)
+
+    cache_key = f"{aid}:{code}"
+    if cache_key in processed_otps:
+        return web.Response(text="OK", status=200)
+
+    processed_otps[cache_key] = time.time()
+
+    now = time.time()
+    for k in list(processed_otps.keys()):
+        if now - processed_otps[k] > 1200:
+            del processed_otps[k]
+
+    try:
+        row = await db.get_activation_user(aid)
+        if row:
+            user_id = row[0]
+            phone = row[1]
+            msg_text = format_otp_text(phone, code)
+            bot = get_bot_instance()
+            if bot:
+                try:
+                    await bot.send_message(
+                        user_id,
+                        msg_text,
+                        reply_markup=kb.otp_copy_menu(code),
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception as e:
+                    logging.error(f"Failed to send webhook OTP to {user_id}: {e}")
+    except Exception as e:
+        logging.error(f"Error processing webhook for {aid}: {e}")
+
+    return web.Response(text="OK", status=200)
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
@@ -287,6 +275,7 @@ async def cb_menu_main(callback: CallbackQuery, state: FSMContext):
     except: pass
     await callback.message.answer("Main Menu:", reply_markup=kb.main_reply_menu())
 
+# --- /balance কমান্ড ---
 @router.message(Command("balance"))
 @router.message(F.text == "Balance")
 async def cmd_balance(message: Message):
@@ -302,6 +291,7 @@ async def cmd_balance(message: Message):
         else:
             await message.answer("❌ Error fetching balance. Check your API key.")
 
+# --- /api কমান্ড ---
 @router.message(Command("api"))
 async def cmd_api(message: Message, state: FSMContext):
     if not await is_allowed(message.from_user.id): return
@@ -312,6 +302,7 @@ async def cmd_api(message: Message, state: FSMContext):
     )
     await state.set_state(BotStates.waiting_for_api_key)
 
+# --- /check_operators কমান্ড ---
 @router.message(Command("check_operators", "operators"))
 async def cmd_check_live_operators(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -338,6 +329,7 @@ async def cmd_check_live_operators(message: Message):
         else:
             await message.answer("❌ অপারেটর তালিকা আনা সম্ভব হয়নি।")
 
+# --- /ok কমান্ড ---
 @router.message(Command("ok"))
 async def cmd_ok_finish(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -415,6 +407,7 @@ async def cmd_ok_finish(message: Message):
         summary_text = f"<b>✅ Finished Activations ({len(finished_lines)}):</b>\n\n" + "\n".join(finished_lines)
         await message.answer(summary_text, parse_mode=ParseMode.HTML)
 
+# --- /retry কমান্ড ---
 @router.message(Command("retry"))
 async def cmd_retry_number(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -462,7 +455,7 @@ async def cmd_retry_number(message: Message):
             clean_p = str(phone_num).lstrip("+")
             await message.answer(
                 f"Retry mode activated.\n\n"
-                f"<b>Number:</b> <code>{clean_p}</code> 🇨🇴\n"
+                f"<b>Number:</b> 🇨🇴 <code>+{clean_p}</code>\n"
                 f"ID: <code>{aid_to_retry}</code>\n\n"
                 f"Please click 'Resend SMS' in Telegram. New code will be delivered automatically.",
                 parse_mode=ParseMode.HTML
@@ -471,6 +464,7 @@ async def cmd_retry_number(message: Message):
             err = retry_res.get("title", str(retry_res)) if isinstance(retry_res, dict) else str(retry_res)
             await message.answer(f"Failed to retry: {html.escape(str(err))}\n(Number might be cancelled or expired)")
 
+# --- /getallsms কমান্ড ---
 @router.message(Command("getallsms", "allsms"))
 async def cmd_get_all_sms(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -530,6 +524,7 @@ async def cmd_get_all_sms(message: Message):
             final_text = final_text[:3990] + "..."
         await message.answer(final_text, parse_mode=ParseMode.HTML)
 
+# --- /stats কমান্ড ---
 @router.message(Command("stats", "statistics"))
 async def cmd_stats(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -599,6 +594,7 @@ async def cmd_stats(message: Message):
         lines.append("\n(Stats reset daily at 21:00 UTC)")
         await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
 
+# --- /history কমান্ড ---
 @router.message(Command("history"))
 async def cmd_history(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -646,6 +642,7 @@ async def cmd_history(message: Message):
             final_text = final_text[:3990] + "..."
         await message.answer(final_text, parse_mode=ParseMode.HTML)
 
+# --- /act_history কমান্ড ---
 @router.message(Command("activations_history", "act_history"))
 async def cmd_activations_history(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -701,6 +698,7 @@ async def cmd_activations_history(message: Message):
             final_text = final_text[:3990] + "..."
         await message.answer(final_text, parse_mode=ParseMode.HTML)
 
+# --- /cancel কমান্ড ---
 @router.message(Command("cancel"))
 async def cmd_cancel_number(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -765,31 +763,24 @@ async def cb_check_sms(callback: CallbackQuery):
     phone = row[1] if row else "Unknown"
 
     res = await client.get_status(aid)
-    code = None
     if isinstance(res, str):
         if res.startswith("STATUS_OK:"):
-            code = extract_otp_code(res.split(":", 1)[1])
+            code = res.split(":", 1)[1]
+            text = format_otp_text(phone, code)
+            processed_otps[f"{aid}:{code}"] = time.time()
+            await callback.message.edit_text(text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
         elif res.startswith("STATUS_WAIT_CODE"):
             await callback.answer("Still waiting for SMS...", show_alert=True)
-            return
         elif res.startswith("STATUS_CANCEL"):
             await db.delete_activation(aid)
             for k in list(processed_otps.keys()):
                 if k.startswith(f"{aid}:"):
                     del processed_otps[k]
             await callback.message.edit_text("Activation cancelled.", reply_markup=kb.back_button())
-            return
-    elif isinstance(res, dict):
-        raw = res.get("smsCode") or res.get("code") or res.get("text")
-        code = extract_otp_code(raw)
-
-    if code:
-        text = format_otp_text(phone)
-        processed_otps[f"{aid}:{code}"] = time.time()
-        cleanup_expired_cache()
-        await callback.message.edit_text(text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
+        else:
+            await callback.answer(f"Status: {res}", show_alert=True)
     else:
-        await callback.answer("Still waiting for SMS...", show_alert=True)
+        await callback.answer("Error checking status.", show_alert=True)
 
 # --- বাল্ক বাই ---
 @router.message(F.text == "Bulk Buy Numbers")
@@ -897,6 +888,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             f"Total: {len(purchased)} numbers (tap any number to copy)\n"
         ]
 
+        # ফ্রেশ নম্বরের লিস্ট (৩নং ছবির মতো একটার পর এক লাইন ফাঁকা থাকবে)
         if fresh_list:
             lines.append(f"🟢 <b>Fresh Numbers ({len(fresh_list)}):</b>")
             for idx, item in enumerate(fresh_list, 1):
@@ -919,13 +911,10 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         final = "\n".join(lines)
         batch_id = str(uuid.uuid4())[:8]
         fresh_phones = [x["phone"] for x in fresh_list]
-        
         fresh_batches_cache[batch_id] = {
             "summary": final,
-            "fresh_phones": fresh_phones,
-            "created_at": time.time()
+            "fresh_phones": fresh_phones
         }
-        cleanup_expired_cache()
 
         reply_markup = kb.bulk_result_menu(batch_id, len(fresh_list))
 
@@ -939,9 +928,9 @@ async def process_bulk_amount(message: Message, state: FSMContext):
     else:
         await status_msg.edit_text("Could not purchase any numbers.")
 
+# --- ফ্রেশ নাম্বার বাটন হ্যান্ডলার ---
 @router.callback_query(F.data.startswith("show_fresh_"))
 async def cb_show_fresh_numbers(callback: CallbackQuery):
-    cleanup_expired_cache()
     batch_id = callback.data[len("show_fresh_"):]
     batch_data = fresh_batches_cache.get(batch_id)
 
@@ -958,7 +947,6 @@ async def cb_show_fresh_numbers(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("back_bulk_"))
 async def cb_back_bulk(callback: CallbackQuery):
-    cleanup_expired_cache()
     batch_id = callback.data[len("back_bulk_"):]
     batch_data = fresh_batches_cache.get(batch_id)
 
@@ -974,6 +962,7 @@ async def cb_back_bulk(callback: CallbackQuery):
         parse_mode=ParseMode.HTML
     )
 
+# --- অ্যাক্টিভ নাম্বার লিস্ট ---
 @router.message(F.text == "Active Numbers")
 async def text_active_numbers(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -1099,6 +1088,7 @@ async def cb_active_cancel(callback: CallbackQuery):
     else:
         await callback.answer("Failed to cancel.", show_alert=True)
 
+# --- প্রিফিক্স ও অপারেটর কমান্ডস ---
 @router.message(Command("exclude", "blacklist"))
 async def cmd_add_exclude(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -1155,6 +1145,7 @@ async def cmd_view_exclude(message: Message):
         formatted = "\n".join(f"- <code>+{p}</code>" for p in prefixes)
         await message.answer(f"Currently blacklisted prefixes:\n\n{formatted}", parse_mode=ParseMode.HTML)
 
+# --- /reset_exclude কমান্ড ---
 @router.message(Command("reset_exclude"))
 async def cmd_reset_exclude(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -1180,12 +1171,14 @@ async def cmd_set_operator(message: Message):
     await db.set_setting("preferred_operator", new_op)
     await message.answer(f"Preferred operator set to: {new_op}")
 
+# --- /operator_list কমান্ড ---
 @router.message(Command("operator_list"))
 async def cmd_view_operator(message: Message):
     if not await is_allowed(message.from_user.id): return
     current_op = await get_preferred_operator_str()
     await message.answer(f"📡 Current operator setting: <b>{current_op}</b>", parse_mode=ParseMode.HTML)
 
+# --- /reset_operator কমান্ড ---
 @router.message(Command("reset_operator"))
 async def cmd_reset_operator(message: Message):
     if not await is_allowed(message.from_user.id): return
