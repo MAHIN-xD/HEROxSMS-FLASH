@@ -60,14 +60,18 @@ def get_colombia_operator(phone: str) -> str:
 
 def format_otp_text(phone: str, code: str) -> str:
     """
-    Number bold, কলম্বিয়ার ফ্ল্যাগ, নম্বর mono,
-    OTP-র পরে স্পেস ও উইং ইমোজি (🪽)
+    Number ও OTP-এর নিচে ইনভিজিবল স্পেস দিয়ে 
+    টেক্সট ও বাটনের মাঝে পরিষ্কার ফাঁকা জায়গা রাখা
     """
     clean_phone = str(phone).lstrip("+").strip()
     safe_phone = html.escape(clean_phone)
     safe_code = html.escape(str(code).strip())
-    return f"<b>Number:</b> 🇨🇴 <code>+{safe_phone}</code>\n\n<b>OTP:</b> <code>{safe_code}</code> | <b>MAH!N 🪽</b>"
-
+    
+    return (
+        f"<b>Number:</b> <code>+{safe_phone}</code> 🇨🇴\n\n"
+        f"<b>OTP:</b> <tg-spoiler>{safe_code}</tg-spoiler> | <b>MAH!N</b> 🪽\n\n"
+        f"\u200b"
+    )
 def format_tg_status(raw_status: any) -> dict:
     if raw_status is None:
         return {"badge": "⚠️ Check Failed", "priority": 5, "is_fresh": False, "is_error": True}
