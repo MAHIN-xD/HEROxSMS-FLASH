@@ -31,7 +31,7 @@ def get_bot_instance():
 ADMIN_ID    = 7266067201
 COLOMBIA_ID = 33
 TG_SERVICE  = "tg"
-MAX_PRICE   = 0.1430
+MAX_PRICE   = 0.135
 
 DEFAULT_EXCLUDE_LIST = ["57350"]
 DEFAULT_OPERATOR = "any"
@@ -42,7 +42,6 @@ fresh_batches_cache = {}
 MENU_BUTTONS = ["Bulk Buy Numbers", "Active Numbers"]
 
 def cleanup_expired_cache():
-    """মেমোরি পরিষ্কার রাখার TTL লজিক"""
     now = time.time()
     for k in list(processed_otps.keys()):
         if now - processed_otps[k] > 1200:
@@ -287,6 +286,7 @@ async def cb_menu_main(callback: CallbackQuery, state: FSMContext):
     except: pass
     await callback.message.answer("Main Menu:", reply_markup=kb.main_reply_menu())
 
+# --- /balance কমান্ড ---
 @router.message(Command("balance"))
 @router.message(F.text == "Balance")
 async def cmd_balance(message: Message):
@@ -302,6 +302,7 @@ async def cmd_balance(message: Message):
         else:
             await message.answer("❌ Error fetching balance. Check your API key.")
 
+# --- /api কমান্ড ---
 @router.message(Command("api"))
 async def cmd_api(message: Message, state: FSMContext):
     if not await is_allowed(message.from_user.id): return
@@ -312,6 +313,7 @@ async def cmd_api(message: Message, state: FSMContext):
     )
     await state.set_state(BotStates.waiting_for_api_key)
 
+# --- /check_operators কমান্ড ---
 @router.message(Command("check_operators", "operators"))
 async def cmd_check_live_operators(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -338,6 +340,7 @@ async def cmd_check_live_operators(message: Message):
         else:
             await message.answer("❌ অপারেটর তালিকা আনা সম্ভব হয়নি।")
 
+# --- /ok কমান্ড ---
 @router.message(Command("ok"))
 async def cmd_ok_finish(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -415,6 +418,7 @@ async def cmd_ok_finish(message: Message):
         summary_text = f"<b>✅ Finished Activations ({len(finished_lines)}):</b>\n\n" + "\n".join(finished_lines)
         await message.answer(summary_text, parse_mode=ParseMode.HTML)
 
+# --- /retry কমান্ড ---
 @router.message(Command("retry"))
 async def cmd_retry_number(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -471,6 +475,7 @@ async def cmd_retry_number(message: Message):
             err = retry_res.get("title", str(retry_res)) if isinstance(retry_res, dict) else str(retry_res)
             await message.answer(f"Failed to retry: {html.escape(str(err))}\n(Number might be cancelled or expired)")
 
+# --- /getallsms কমান্ড ---
 @router.message(Command("getallsms", "allsms"))
 async def cmd_get_all_sms(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -530,6 +535,7 @@ async def cmd_get_all_sms(message: Message):
             final_text = final_text[:3990] + "..."
         await message.answer(final_text, parse_mode=ParseMode.HTML)
 
+# --- /stats কমান্ড ---
 @router.message(Command("stats", "statistics"))
 async def cmd_stats(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -599,6 +605,7 @@ async def cmd_stats(message: Message):
         lines.append("\n(Stats reset daily at 21:00 UTC)")
         await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
 
+# --- /history কমান্ড ---
 @router.message(Command("history"))
 async def cmd_history(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -646,6 +653,7 @@ async def cmd_history(message: Message):
             final_text = final_text[:3990] + "..."
         await message.answer(final_text, parse_mode=ParseMode.HTML)
 
+# --- /act_history কমান্ড ---
 @router.message(Command("activations_history", "act_history"))
 async def cmd_activations_history(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -701,6 +709,7 @@ async def cmd_activations_history(message: Message):
             final_text = final_text[:3990] + "..."
         await message.answer(final_text, parse_mode=ParseMode.HTML)
 
+# --- /cancel কমান্ড ---
 @router.message(Command("cancel"))
 async def cmd_cancel_number(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -821,18 +830,25 @@ async def process_bulk_amount(message: Message, state: FSMContext):
     current_exc = await get_excluded_prefixes_str()
     current_op = await get_preferred_operator_str()
 
-    # HeroSMS ওপেন পুলে কোনো অপশন সেট না থাকলে ফাঁকা পাঠানো হবে
     api_exc = current_exc if current_exc else None
     api_op = current_op if current_op and current_op.lower() != "any" else None
 
     for i in range(amount):
-        res = await client.get_number(
-            service=TG_SERVICE, 
-            country=COLOMBIA_ID, 
-            max_price=MAX_PRICE,
-            phone_exception=api_exc,
-            operator=api_op
-        )
+        res = None
+        # প্রতিটি নম্বরের জন্য ৩ বার স্মার্ট রিট্রাই লুপ
+        for attempt in range(3):
+            res = await client.get_number(
+                service=TG_SERVICE, 
+                country=COLOMBIA_ID, 
+                max_price=MAX_PRICE,
+                phone_exception=api_exc,
+                operator=api_op
+            )
+            if isinstance(res, dict) and "activationId" in res:
+                break
+            # নম্বর না পেলে বা এরর দিলে ০.৮ সেকেন্ড অপেক্ষা করে আবার চেষ্টা
+            await asyncio.sleep(0.8)
+
         if isinstance(res, dict) and "activationId" in res:
             aid = str(res["activationId"])
             phone = res.get("phoneNumber", "Unknown")
@@ -939,6 +955,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 # --- ফ্রেশ নাম্বার বাটন হ্যান্ডলার ---
 @router.callback_query(F.data.startswith("show_fresh_"))
 async def cb_show_fresh_numbers(callback: CallbackQuery):
+    cleanup_expired_cache()
     batch_id = callback.data[len("show_fresh_"):]
     batch_data = fresh_batches_cache.get(batch_id)
 
@@ -955,6 +972,7 @@ async def cb_show_fresh_numbers(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("back_bulk_"))
 async def cb_back_bulk(callback: CallbackQuery):
+    cleanup_expired_cache()
     batch_id = callback.data[len("back_bulk_"):]
     batch_data = fresh_batches_cache.get(batch_id)
 
@@ -1153,6 +1171,7 @@ async def cmd_view_exclude(message: Message):
         formatted = "\n".join(f"- <code>+{p}</code>" for p in prefixes)
         await message.answer(f"Currently blacklisted prefixes:\n\n{formatted}", parse_mode=ParseMode.HTML)
 
+# --- /reset_exclude কমান্ড ---
 @router.message(Command("reset_exclude"))
 async def cmd_reset_exclude(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -1178,12 +1197,14 @@ async def cmd_set_operator(message: Message):
     await db.set_setting("preferred_operator", new_op)
     await message.answer(f"Preferred operator set to: {new_op}")
 
+# --- /operator_list কমান্ড ---
 @router.message(Command("operator_list"))
 async def cmd_view_operator(message: Message):
     if not await is_allowed(message.from_user.id): return
     current_op = await get_preferred_operator_str()
     await message.answer(f"📡 Current operator setting: <b>{current_op}</b>", parse_mode=ParseMode.HTML)
 
+# --- /reset_operator কমান্ড ---
 @router.message(Command("reset_operator"))
 async def cmd_reset_operator(message: Message):
     if not await is_allowed(message.from_user.id): return
