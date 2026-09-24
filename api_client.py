@@ -7,7 +7,6 @@ import urllib.request
 import urllib.error
 from datetime import datetime, timezone
 
-# requests ইনস্টল থাকলে সরাসরি ব্যবহার করবে, না থাকলে বিল্ট-ইন urllib দিয়ে চলবে
 try:
     import requests
     HAS_REQUESTS = True
@@ -45,7 +44,6 @@ def _sync_check_chunk(chunk_numbers: list) -> dict:
         "phone_numbers": chunk_numbers
     }
 
-    # ১. requests থাকলে স্যাম্পল কোডের মতো সরাসরি requests.get কল হবে
     if HAS_REQUESTS:
         try:
             resp = requests.get(CHECKER_URL, json=payload, timeout=60)
@@ -61,7 +59,6 @@ def _sync_check_chunk(chunk_numbers: list) -> dict:
         except Exception as e:
             logging.error(f"Checker requests.get failed: {e}")
 
-    # ২. requests না থাকলে পাইথনের বিল্ট-ইন urllib দিয়ে ৬০ সেকেন্ড টাইমআউটে চলবে
     try:
         req_data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
@@ -92,7 +89,7 @@ def _sync_check_chunk(chunk_numbers: list) -> dict:
 
 async def check_telegram_numbers(phone_numbers: list) -> dict:
     """
-    ১০টি করে ব্যাচে পাঠিয়ে ৬০ সেকেন্ড পর্যন্ত অপেক্ষা করে নির্ভুল স্ট্যাটাস নিশ্চিত করে
+    ১০টি করে ব্যাচে পাঠিয়ে ৬০ সেকেন্ড পর্যন্ত অপেক্ষা করে ব্যাকগ্রাউন্ড থ্রেডে নির্ভুল স্ট্যাটাস নিশ্চিত করে
     """
     if not phone_numbers:
         return {}
