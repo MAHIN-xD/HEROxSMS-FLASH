@@ -293,7 +293,7 @@ async def cmd_balance(message: Message):
     if not await is_allowed(message.from_user.id): return
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         user, client = await get_valid_user_client(message.from_user.id)
-        if not user:
+        if not user or not client:
             await message.answer("Please set your HeroSMS API Key first with /api")
             return
         balance = await client.get_balance()
@@ -319,7 +319,7 @@ async def cmd_check_live_operators(message: Message):
     if not await is_allowed(message.from_user.id): return
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         user, client = await get_valid_user_client(message.from_user.id)
-        if not user:
+        if not user or not client:
             await message.answer("Please set your API key first with /api")
             return
 
@@ -346,7 +346,7 @@ async def cmd_ok_finish(message: Message):
     if not await is_allowed(message.from_user.id): return
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         user, client = await get_valid_user_client(message.from_user.id)
-        if not user:
+        if not user or not client:
             await message.answer("Please set your API key first.")
             return
 
@@ -430,7 +430,7 @@ async def cmd_retry_number(message: Message):
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         target = args[1].replace("+", "").strip()
         user, client = await get_valid_user_client(message.from_user.id)
-        if not user:
+        if not user or not client:
             await message.answer("Please set your API key first.")
             return
 
@@ -486,7 +486,7 @@ async def cmd_get_all_sms(message: Message):
 
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         user, client = await get_valid_user_client(message.from_user.id)
-        if not user:
+        if not user or not client:
             await message.answer("Please send your HeroSMS API Key first.")
             return
 
@@ -541,7 +541,7 @@ async def cmd_stats(message: Message):
     if not await is_allowed(message.from_user.id): return
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         user, client = await get_valid_user_client(message.from_user.id)
-        if not user:
+        if not user or not client:
             await message.answer("Please send your HeroSMS API Key first.")
             return
 
@@ -611,7 +611,7 @@ async def cmd_history(message: Message):
     if not await is_allowed(message.from_user.id): return
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         user, client = await get_valid_user_client(message.from_user.id)
-        if not user:
+        if not user or not client:
             await message.answer("Please send your HeroSMS API Key first.")
             return
 
@@ -659,7 +659,7 @@ async def cmd_activations_history(message: Message):
     if not await is_allowed(message.from_user.id): return
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         user, client = await get_valid_user_client(message.from_user.id)
-        if not user:
+        if not user or not client:
             await message.answer("Please send your HeroSMS API Key first with /api")
             return
 
@@ -721,7 +721,7 @@ async def cmd_cancel_number(message: Message):
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         target = args[1].replace("+", "").strip()
         user, client = await get_valid_user_client(message.from_user.id)
-        if not user: return
+        if not user or not client: return
         
         res = await client.get_active_activations()
         aid_to_cancel = target
@@ -745,11 +745,14 @@ async def cmd_cancel_number(message: Message):
             err = cancel_res.get("title", str(cancel_res)) if isinstance(cancel_res, dict) else str(cancel_res)
             await message.answer(f"Failed to cancel: {html.escape(str(err))}")
 
+# নিরাপদ cb_cancel_single
 @router.callback_query(F.data.startswith("single_cancel_"))
 async def cb_cancel_single(callback: CallbackQuery):
     aid = callback.data[len("single_cancel_"):]
     user, client = await get_valid_user_client(callback.from_user.id)
-    if not user: return
+    if not user or not client:
+        await callback.answer("API Key not found.", show_alert=True)
+        return
 
     res = await client.set_status(aid, 8)
     if isinstance(res, str) and res.startswith("ACCESS_CANCEL"):
@@ -764,11 +767,14 @@ async def cb_cancel_single(callback: CallbackQuery):
         err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
         await callback.answer(f"Error: {err}", show_alert=True)
 
+# নিরাপদ cb_check_sms
 @router.callback_query(F.data.startswith("check_"))
 async def cb_check_sms(callback: CallbackQuery):
     aid = callback.data[len("check_"):]
     user, client = await get_valid_user_client(callback.from_user.id)
-    if not user: return
+    if not user or not client:
+        await callback.answer("API Key not found. Please set it using /api", show_alert=True)
+        return
 
     row = await db.get_activation_user(aid)
     phone = row[1] if row else "Unknown"
@@ -799,7 +805,7 @@ async def cb_check_sms(callback: CallbackQuery):
 async def text_bulk_buy(message: Message, state: FSMContext):
     if not await is_allowed(message.from_user.id): return
     user, client = await get_valid_user_client(message.from_user.id)
-    if not user: 
+    if not user or not client: 
         await message.answer("Please send your HeroSMS API Key first with /api")
         return
     await message.answer("📦 <b>Bulk Purchase</b>\n\nHow many numbers do you want to buy? (1-50)", parse_mode=ParseMode.HTML)
@@ -821,7 +827,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 
     await state.clear()
     user, client = await get_valid_user_client(message.from_user.id)
-    if not user: return
+    if not user or not client: return
 
     status_msg = await message.answer(f"Buying {amount} numbers...")
     
@@ -846,7 +852,6 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             )
             if isinstance(res, dict) and "activationId" in res:
                 break
-            # নম্বর না পেলে বা এরর দিলে ০.৮ সেকেন্ড অপেক্ষা করে আবার চেষ্টা
             await asyncio.sleep(0.8)
 
         if isinstance(res, dict) and "activationId" in res:
@@ -994,7 +999,7 @@ async def text_active_numbers(message: Message):
     if not await is_allowed(message.from_user.id): return
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         user, client = await get_valid_user_client(message.from_user.id)
-        if not user: 
+        if not user or not client: 
             await message.answer("Please send your HeroSMS API Key first with /api")
             return
 
@@ -1020,7 +1025,7 @@ async def text_active_numbers(message: Message):
 async def cb_active_page(callback: CallbackQuery):
     page = int(callback.data.split("_")[2])
     user, client = await get_valid_user_client(callback.from_user.id)
-    if not user: return
+    if not user or not client: return
 
     res = await client.get_active_activations()
     if isinstance(res, dict) and res.get("status") == "success":
@@ -1038,7 +1043,7 @@ async def cb_active_page(callback: CallbackQuery):
 async def cb_cancel_all_active(callback: CallbackQuery):
     if not await is_allowed(callback.from_user.id): return
     user, client = await get_valid_user_client(callback.from_user.id)
-    if not user: return
+    if not user or not client: return
 
     res = await client.get_active_activations()
     if not (isinstance(res, dict) and res.get("status") == "success"):
@@ -1087,7 +1092,7 @@ async def cb_active_cancel(callback: CallbackQuery):
     page = int(parts[3]) if len(parts) > 3 else 0
 
     user, client = await get_valid_user_client(callback.from_user.id)
-    if not user: return
+    if not user or not client: return
 
     r = await client.set_status(aid, 8)
     if isinstance(r, str) and (r.startswith("ACCESS_CANCEL") or r.startswith("STATUS_CANCEL")):
