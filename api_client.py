@@ -195,8 +195,11 @@ class HeroSMSClient:
 
     async def get_number(self, service: str, country: int, max_price: float = None, phone_exception: str = None, operator: str = None):
         params = {"service": service, "country": country}
-        if max_price: 
-            params["maxPrice"] = max_price
+        
+        # Max price strictly formatted as string for exact HeroSMS API acceptance
+        if max_price is not None: 
+            params["maxPrice"] = str(max_price)
+            params["max_price"] = str(max_price)
         
         if phone_exception:
             if isinstance(phone_exception, (list, tuple)):
