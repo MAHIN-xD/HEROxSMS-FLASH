@@ -89,7 +89,7 @@ def _sync_check_chunk(chunk_numbers: list) -> dict:
 
 async def check_telegram_numbers(phone_numbers: list) -> dict:
     """
-    ১০টি করে ব্যাচে পাঠিয়ে ৬০ সেকেন্ড পর্যন্ত অপেক্ষা করে ব্যাকগ্রাউন্ড থ্রেডে নির্ভুল স্ট্যাটাস নিশ্চিত করে
+    ১০টি করে ব্যাচে পাঠিয়ে ব্যাকগ্রাউন্ড থ্রেডে নির্ভুল স্ট্যাটাস রিটার্ন করে
     """
     if not phone_numbers:
         return {}
@@ -196,16 +196,19 @@ class HeroSMSClient:
     async def get_number(self, service: str, country: int, max_price: float = None, phone_exception: str = None, operator: str = None):
         params = {"service": service, "country": country}
         
-        # Max price strictly formatted as string for exact HeroSMS API acceptance
+        # Max price strictly passed as string (dual parameters for full compatibility)
         if max_price is not None: 
             params["maxPrice"] = str(max_price)
             params["max_price"] = str(max_price)
         
+        # Phone exception passed in both formats
         if phone_exception:
             if isinstance(phone_exception, (list, tuple)):
-                params["phoneException"] = ",".join(str(p).strip().lstrip("+") for p in phone_exception)
+                clean_exc = ",".join(str(p).strip().lstrip("+") for p in phone_exception)
             else:
-                params["phoneException"] = str(phone_exception).strip().lstrip("+")
+                clean_exc = str(phone_exception).strip().lstrip("+")
+            params["phoneException"] = clean_exc
+            params["phone_exception"] = clean_exc
 
         if operator and str(operator).lower() != "any":
             params["operator"] = str(operator).strip().lower()
@@ -215,10 +218,12 @@ class HeroSMSClient:
         if isinstance(res, str) and res.startswith("ACCESS_NUMBER"):
             parts = res.split(":")
             if len(parts) >= 3:
+                cost = float(parts[3]) if len(parts) >= 4 and parts[3].replace('.', '', 1).isdigit() else None
                 return {
                     "status": "SUCCESS",
                     "activationId": parts[1],
-                    "phoneNumber": parts[2]
+                    "phoneNumber": parts[2],
+                    "cost": cost
                 }
         
         if isinstance(res, dict) and "activationId" in res:
