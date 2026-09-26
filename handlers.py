@@ -126,25 +126,31 @@ def format_tg_status(raw_status: any) -> dict:
 
 async def get_excluded_prefixes_str() -> str:
     saved = await db.get_setting("excluded_prefixes")
-    return str(saved) if saved else ",".join(DEFAULT_EXCLUDE_LIST)
+    return str(saved) if saved else ",".join(DEFAULT_EXCLUDE_LIST)[cite: 3]
 
 async def get_preferred_operator_str() -> str:
     saved = await db.get_setting("preferred_operator")
-    return str(saved) if saved else DEFAULT_OPERATOR
+    return str(saved) if saved else DEFAULT_OPERATOR[cite: 3]
 
 async def get_valid_user_client(user_id: int):
     user = await db.get_user(user_id)
-    if not user or not user.get("api_key"):
+    if not user:
         return None, None
     try:
-        return user, HeroSMSClient(user["api_key"])
+        api_key = user["api_key"]
+        if not api_key:
+            return None, None
+        return user, HeroSMSClient(api_key)
     except Exception:
         return None, None
 
 async def is_allowed(user_id: int) -> bool:
     if user_id == ADMIN_ID: return True
     user = await db.get_user(user_id)
-    if user and user.get("is_banned"): return False
+    try:
+        if user and user["is_banned"]: return False
+    except Exception:
+        pass
     maintenance = await db.get_setting("maintenance")
     return maintenance != "1"
 
@@ -217,16 +223,26 @@ async def cmd_start(message: Message, state: FSMContext):
     await db.add_user(message.from_user.id)
     user = await db.get_user(message.from_user.id)
 
-    if user and user.get("is_banned"):
-        await message.answer("You are banned from using this bot.")
-        return
+    try:
+        if user and user["is_banned"]:
+            await message.answer("You are banned from using this bot.")
+            return
+    except Exception:
+        pass
 
     maintenance = await db.get_setting("maintenance")
     if maintenance == "1" and message.from_user.id != ADMIN_ID:
         await message.answer("Bot is under maintenance. Contact Admin.")
         return
 
-    if not user or not user.get("api_key"):
+    has_api_key = False
+    try:
+        if user and user["api_key"]:
+            has_api_key = True
+    except Exception:
+        has_api_key = False
+
+    if not has_api_key:
         await message.answer(
             "Welcome to HeroSMS Bot!\n\nPlease send your HeroSMS API Key to get started.",
             reply_markup=ReplyKeyboardRemove()
@@ -834,7 +850,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             )
             if isinstance(res, dict) and "activationId" in res:
                 break
-            await asyncio.sleep(0.8) # 0.8s interval
+            await asyncio.sleep(0.8)
 
         if isinstance(res, dict) and "activationId" in res:
             aid = str(res["activationId"])
@@ -1227,7 +1243,7 @@ async def process_broadcast(message: Message, state: FSMContext):
         try:
             await message.bot.send_message(uid, f"Broadcast:\n\n{message.text}")
             sent += 1
-            await asyncio.sleep(0.05)  # Telegram API flood ban rodh korar jonno safe delay
+            await asyncio.sleep(0.05)
         except Exception:
             pass
     await message.answer(f"Sent to {sent} users.")
@@ -1250,7 +1266,10 @@ async def process_ban_id(message: Message, state: FSMContext):
     if not user:
         await message.answer("User not found.")
         return
-    new_status = not bool(user.get("is_banned", False))
+    try:
+        new_status = not bool(user["is_banned"])
+    except Exception:
+        new_status = True
     await db.set_ban_status(target, new_status)
     label = "Banned" if new_status else "Unbanned"
     await message.answer(f"User {target} {label}.")
