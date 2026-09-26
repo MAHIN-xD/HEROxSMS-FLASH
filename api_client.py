@@ -3,8 +3,6 @@ import asyncio
 import json
 import logging
 import re
-import urllib.request
-import urllib.error
 from datetime import datetime, timezone
 
 try:
@@ -24,7 +22,6 @@ CHECKER_API_KEY = "SIGUzg7Xf7euGs8B"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
 }
 
 _session_pool = None
@@ -46,51 +43,18 @@ def _sync_check_chunk(chunk_numbers: list) -> dict:
 
     if HAS_REQUESTS:
         try:
-            resp = requests.get(CHECKER_URL, json=payload, timeout=60)
+            resp = requests.get(CHECKER_URL, json=payload, timeout=45)
             if resp.status_code == 200:
                 data = resp.json()
                 if str(data.get("status")) == "200":
                     return data.get("result_obj") or {}
-                else:
-                    logging.warning(f"Checker API error: {data}")
-                    return {num: f"API_ERROR: {data.get('msg') or data}" for num in chunk_numbers}
-            else:
-                logging.warning(f"Checker HTTP status: {resp.status_code}")
+                return {num: f"API_ERROR: {data.get('msg') or data}" for num in chunk_numbers}
         except Exception as e:
-            logging.error(f"Checker requests.get failed: {e}")
-
-    try:
-        req_data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            CHECKER_URL,
-            data=req_data,
-            headers={
-                "Content-Type": "application/json",
-                "User-Agent": "python-requests/2.31.0",
-                "Accept": "*/*"
-            },
-            method="GET"
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            if resp.status == 200:
-                body = resp.read().decode("utf-8")
-                data = json.loads(body)
-                if str(data.get("status")) == "200":
-                    return data.get("result_obj") or {}
-                else:
-                    logging.warning(f"Checker urllib error: {data}")
-                    return {num: f"API_ERROR: {data.get('msg') or data}" for num in chunk_numbers}
-            else:
-                logging.warning(f"Checker urllib HTTP status: {resp.status}")
-    except Exception as e:
-        logging.error(f"Checker urllib failed: {e}")
+            logging.error(f"Checker requests failed: {e}")
 
     return {num: "CHECK_FAILED" for num in chunk_numbers}
 
 async def check_telegram_numbers(phone_numbers: list) -> dict:
-    """
-    ১০টি করে ব্যাচে পাঠিয়ে ব্যাকগ্রাউন্ড থ্রেডে নির্ভুল স্ট্যাটাস রিটার্ন করে
-    """
     if not phone_numbers:
         return {}
 
@@ -163,22 +127,22 @@ class HeroSMSClient:
             if res_clean.startswith("ACCESS_BALANCE:"):
                 try:
                     return float(res_clean.split(":", 1)[1].strip())
-                except:
+                except Exception:
                     return None
             try:
                 return float(res_clean)
-            except:
+            except Exception:
                 pass
         elif isinstance(res, dict):
             if "balance" in res:
                 try:
                     return float(res["balance"])
-                except:
+                except Exception:
                     pass
             if "data" in res and isinstance(res["data"], dict) and "balance" in res["data"]:
                 try:
                     return float(res["data"]["balance"])
-                except:
+                except Exception:
                     pass
         return None
 
@@ -196,12 +160,12 @@ class HeroSMSClient:
     async def get_number(self, service: str, country: int, max_price: float = None, phone_exception: str = None, operator: str = None):
         params = {"service": service, "country": country}
         
-        # Max price strictly passed as string (dual parameters for full compatibility)
-        if max_price is not None: 
-            params["maxPrice"] = str(max_price)
-            params["max_price"] = str(max_price)
+        # Dual-binding: Any rate up to max_price will be accepted
+        if max_price is not None:
+            formatted_price = f"{float(max_price):.4f}".rstrip('0').rstrip('.')
+            params["maxPrice"] = formatted_price
+            params["max_price"] = formatted_price
         
-        # Phone exception passed in both formats
         if phone_exception:
             if isinstance(phone_exception, (list, tuple)):
                 clean_exc = ",".join(str(p).strip().lstrip("+") for p in phone_exception)
