@@ -126,11 +126,11 @@ def format_tg_status(raw_status: any) -> dict:
 
 async def get_excluded_prefixes_str() -> str:
     saved = await db.get_setting("excluded_prefixes")
-    return str(saved) if saved else ",".join(DEFAULT_EXCLUDE_LIST)[cite: 3]
+    return str(saved) if saved else ",".join(DEFAULT_EXCLUDE_LIST)
 
 async def get_preferred_operator_str() -> str:
     saved = await db.get_setting("preferred_operator")
-    return str(saved) if saved else DEFAULT_OPERATOR[cite: 3]
+    return str(saved) if saved else DEFAULT_OPERATOR
 
 async def get_valid_user_client(user_id: int):
     user = await db.get_user(user_id)
