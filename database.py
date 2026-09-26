@@ -6,7 +6,6 @@ DB_PATH = os.getenv("DB_PATH", "database.db")
 
 @asynccontextmanager
 async def get_db():
-    """হাই-কনকারেন্সিতে ডেটাবেজ লক রোধ করার জন্য অপ্টিমাইজড কানেকশন হেল্পার"""
     async with aiosqlite.connect(DB_PATH, timeout=10.0) as db:
         await db.execute("PRAGMA busy_timeout = 5000")
         db.row_factory = aiosqlite.Row
@@ -14,7 +13,6 @@ async def get_db():
 
 async def init_db():
     async with get_db() as db:
-        # পারফরম্যান্স বুস্ট ও নন-ব্লকিং রিড/রাইট
         await db.execute("PRAGMA journal_mode = WAL")
         await db.execute("PRAGMA synchronous = NORMAL")
         
@@ -83,7 +81,18 @@ async def save_activation(activation_id: str, user_id: int, phone: str):
     async with get_db() as db:
         await db.execute(
             "INSERT OR REPLACE INTO activations (activation_id, user_id, phone) VALUES (?, ?, ?)",
-            (str(activation_id), user_id, phone)
+            (str(activation_id), user_id, str(phone))
+        )
+        await db.commit()
+
+async def save_activations_batch(records: list):
+    """Bulk buy-er jonno fast batch insertion (tuples of (aid, user_id, phone))"""
+    if not records:
+        return
+    async with get_db() as db:
+        await db.executemany(
+            "INSERT OR REPLACE INTO activations (activation_id, user_id, phone) VALUES (?, ?, ?)",
+            [(str(r[0]), r[1], str(r[2])) for r in records]
         )
         await db.commit()
 
