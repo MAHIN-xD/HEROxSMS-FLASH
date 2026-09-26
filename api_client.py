@@ -5,12 +5,6 @@ import logging
 import re
 from datetime import datetime, timezone
 
-try:
-    import requests
-    HAS_REQUESTS = True
-except ImportError:
-    HAS_REQUESTS = False
-
 BASE_URL = "https://hero-sms.com/stubs/handler_api.php"
 V1_BASE_URL = "https://hero-sms.com/api/v1"
 
@@ -30,27 +24,25 @@ async def get_session() -> aiohttp.ClientSession:
     global _session_pool
     if _session_pool is None or _session_pool.closed:
         connector = aiohttp.TCPConnector(limit=100, keepalive_timeout=60, enable_cleanup_closed=True)
-        timeout = aiohttp.ClientTimeout(total=30)
+        timeout = aiohttp.ClientTimeout(total=45)
         _session_pool = aiohttp.ClientSession(connector=connector, headers=HEADERS, timeout=timeout)
     return _session_pool
 
-def _sync_check_chunk(chunk_numbers: list) -> dict:
+async def _async_check_chunk(session: aiohttp.ClientSession, chunk_numbers: list) -> dict:
     payload = {
         "auth": CHECKER_AUTH,
         "api_key": CHECKER_API_KEY,
         "phone_numbers": chunk_numbers
     }
-
-    if HAS_REQUESTS:
-        try:
-            resp = requests.get(CHECKER_URL, json=payload, timeout=45)
-            if resp.status_code == 200:
-                data = resp.json()
+    try:
+        async with session.get(CHECKER_URL, json=payload, timeout=aiohttp.ClientTimeout(total=35)) as resp:
+            if resp.status == 200:
+                data = await resp.json()
                 if str(data.get("status")) == "200":
                     return data.get("result_obj") or {}
                 return {num: f"API_ERROR: {data.get('msg') or data}" for num in chunk_numbers}
-        except Exception as e:
-            logging.error(f"Checker requests failed: {e}")
+    except Exception as e:
+        logging.error(f"Async Checker request failed: {e}")
 
     return {num: "CHECK_FAILED" for num in chunk_numbers}
 
@@ -73,10 +65,11 @@ async def check_telegram_numbers(phone_numbers: list) -> dict:
 
     all_results = {}
     chunk_size = 10
+    session = await get_session()
 
     for i in range(0, len(unique_numbers), chunk_size):
         chunk = unique_numbers[i:i + chunk_size]
-        res_obj = await asyncio.to_thread(_sync_check_chunk, chunk)
+        res_obj = await _async_check_chunk(session, chunk)
         for k, v in res_obj.items():
             clean_k = re.sub(r'[^\d]', '', str(k))
             all_results[str(k)] = v
@@ -160,7 +153,7 @@ class HeroSMSClient:
     async def get_number(self, service: str, country: int, max_price: float = None, phone_exception: str = None, operator: str = None):
         params = {"service": service, "country": country}
         
-        # Dual-binding: Any rate up to max_price will be accepted
+        # Dual-binding: 0 theke suru kore max_price porjonto shob tier dhorbe
         if max_price is not None:
             formatted_price = f"{float(max_price):.4f}".rstrip('0').rstrip('.')
             params["maxPrice"] = formatted_price
