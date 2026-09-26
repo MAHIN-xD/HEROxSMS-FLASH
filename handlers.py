@@ -31,7 +31,7 @@ def get_bot_instance():
 ADMIN_ID    = 7266067201
 COLOMBIA_ID = 33
 TG_SERVICE  = "tg"
-MAX_PRICE   = 0.145
+MAX_PRICE   = 0.150
 
 # WOM prefix blacklist
 DEFAULT_EXCLUDE_LIST = ["57350", "57351"]
@@ -41,6 +41,14 @@ processed_otps = {}
 fresh_batches_cache = {}
 
 MENU_BUTTONS = ["Bulk Buy Numbers", "Active Numbers"]
+
+def clean_error_text(raw_err: any) -> str:
+    if not raw_err:
+        return "Unknown Error"
+    text = str(raw_err).strip()
+    text = text.replace("phone_number_", "").replace("error_", "")
+    text = text.replace("_", " ")
+    return html.escape(text.title())
 
 def cleanup_expired_cache():
     now = time.time()
@@ -111,7 +119,7 @@ def format_tg_status(raw_status: any) -> dict:
     if any(w in st for w in banned_signals) and not any(neg in st for neg in ["not", "un", "no", "non", "without", "false"]):
         return {"badge": "🚫 Banned", "priority": 4, "is_fresh": False, "is_error": False}
 
-    clean = re.sub(r'phone_number_', '', st, flags=re.IGNORECASE).replace('_', ' ').strip().title()
+    clean = clean_error_text(st)
     return {"badge": f"⚠️ {clean}", "priority": 5, "is_fresh": False, "is_error": False}
 
 async def get_excluded_prefixes_str() -> str:
@@ -273,9 +281,9 @@ async def process_api_key(message: Message, state: FSMContext):
             elif isinstance(res, str):
                 err_msg = res
             
-            err_msg = html.escape(str(err_msg))
-            if err_msg and err_msg != "None":
-                await message.answer(f"❌ Invalid API Key ({err_msg}). Please check and try again.")
+            clean_err = clean_error_text(err_msg)
+            if clean_err and clean_err != "None":
+                await message.answer(f"❌ Invalid API Key ({clean_err}). Please check and try again.")
             else:
                 await message.answer("❌ Invalid API Key. Please check and try again.")
 
@@ -357,7 +365,8 @@ async def cmd_ok_finish(message: Message):
         res = await client.get_active_activations()
         if not (isinstance(res, dict) and res.get("status") == "success"):
             err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
-            await message.answer(f"❌ Failed to fetch active numbers: {html.escape(str(err))}")
+            clean_err = clean_error_text(err)
+            await message.answer(f"❌ Failed to fetch active numbers: {clean_err}")
             return
 
         activations = res.get("data", [])
@@ -405,7 +414,8 @@ async def cmd_ok_finish(message: Message):
                     finished_lines.append(f"• <b>+{clean_phone}</b> ({op}) - Finished ✅")
                 else:
                     err = r.get("title", str(r)) if isinstance(r, dict) else str(r)
-                    finished_lines.append(f"• <b>+{clean_phone}</b> - ⚠️ {html.escape(str(err))}")
+                    clean_err = clean_error_text(err)
+                    finished_lines.append(f"• <b>+{clean_phone}</b> - ⚠️ {clean_err}")
             except Exception as e:
                 finished_lines.append(f"• <b>+{clean_phone}</b> - Error: {e}")
 
@@ -467,7 +477,8 @@ async def cmd_retry_number(message: Message):
             )
         else:
             err = retry_res.get("title", str(retry_res)) if isinstance(retry_res, dict) else str(retry_res)
-            await message.answer(f"Failed to retry: {html.escape(str(err))}\n(Number might be cancelled or expired)")
+            clean_err = clean_error_text(err)
+            await message.answer(f"Failed to retry: {clean_err}\n(Number might be cancelled or expired)")
 
 # --- /getallsms ---
 @router.message(Command("getallsms", "allsms"))
@@ -498,7 +509,8 @@ async def cmd_get_all_sms(message: Message):
 
         if not res or not isinstance(res, dict):
             err = str(res) if res else "No response"
-            await message.answer(f"Could not load SMS: {html.escape(err)}")
+            clean_err = clean_error_text(err)
+            await message.answer(f"Could not load SMS: {clean_err}")
             return
 
         sms_list = res.get("data", [])
@@ -546,7 +558,8 @@ async def cmd_stats(message: Message):
 
         if not res or not isinstance(res, dict) or "data" not in res:
             err = res.get("details") or res.get("title") or str(res) if isinstance(res, dict) else str(res)
-            await message.answer(f"Stats not found: {html.escape(str(err))}")
+            clean_err = clean_error_text(err)
+            await message.answer(f"Stats not found: {clean_err}")
             return
 
         data = res.get("data", {})
@@ -618,7 +631,8 @@ async def cmd_history(message: Message):
 
         if not res or not isinstance(res, list):
             err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
-            await message.answer(f"History not found: {html.escape(str(err))}")
+            clean_err = clean_error_text(err)
+            await message.answer(f"History not found: {clean_err}")
             return
 
         if not res:
@@ -668,7 +682,8 @@ async def cmd_activations_history(message: Message):
             if isinstance(res_legacy, list) and res_legacy:
                 return await cmd_history(message)
             err = res.get("details") or res.get("title") or str(res) if isinstance(res, dict) else str(res)
-            await message.answer(f"Could not load report: {html.escape(str(err))}")
+            clean_err = clean_error_text(err)
+            await message.answer(f"Could not load report: {clean_err}")
             return
 
         totals = res.get("totals", [])
@@ -737,7 +752,8 @@ async def cmd_cancel_number(message: Message):
             await message.answer("Cannot cancel within first 2 minutes.")
         else:
             err = cancel_res.get("title", str(cancel_res)) if isinstance(cancel_res, dict) else str(cancel_res)
-            await message.answer(f"Failed to cancel: {html.escape(str(err))}")
+            clean_err = clean_error_text(err)
+            await message.answer(f"Failed to cancel: {clean_err}")
 
 # নিরাপদ cb_cancel_single
 @router.callback_query(F.data.startswith("single_cancel_"))
@@ -759,7 +775,8 @@ async def cb_cancel_single(callback: CallbackQuery):
         await callback.answer("Cannot cancel within first 2 minutes.", show_alert=True)
     else:
         err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
-        await callback.answer(f"Error: {err}", show_alert=True)
+        clean_err = clean_error_text(err)
+        await callback.answer(f"Error: {clean_err}", show_alert=True)
 
 # নিরাপদ cb_check_sms
 @router.callback_query(F.data.startswith("check_"))
@@ -790,7 +807,8 @@ async def cb_check_sms(callback: CallbackQuery):
                     del processed_otps[k]
             await callback.message.edit_text("Activation cancelled.", reply_markup=kb.back_button())
         else:
-            await callback.answer(f"Status: {res}", show_alert=True)
+            clean_res = clean_error_text(res)
+            await callback.answer(f"Status: {clean_res}", show_alert=True)
     else:
         await callback.answer("Error checking status.", show_alert=True)
 
@@ -823,7 +841,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
     user, client = await get_valid_user_client(message.from_user.id)
     if not user or not client: return
 
-    status_msg = await message.answer(f"Buying {amount} numbers...")
+    status_msg = await message.answer(f"Buying {amount} numbers... (0/{amount}) (0%)")
     
     purchased = []
     last_edit_time = time.time()
@@ -863,7 +881,8 @@ async def process_bulk_amount(message: Message, state: FSMContext):
                         f"{n}. <b>+{p}</b> ({get_colombia_operator(p)})" 
                         for n, p in enumerate(display_lines, len(purchased)-len(display_lines)+1)
                     )
-                    upd_text = f"Buying {amount} numbers... ({len(purchased)}/{amount})\n\n{lines}"
+                    percent = int((len(purchased) / amount) * 100)
+                    upd_text = f"Buying {amount} numbers... ({len(purchased)}/{amount}) ({percent}%)\n\n{lines}"
                     if len(purchased) > 10:
                         upd_text += f"\n...and {len(purchased)-10} earlier"
                     await status_msg.edit_text(upd_text, parse_mode=ParseMode.HTML)
@@ -874,12 +893,13 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             await asyncio.sleep(0.3)
         else:
             err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
-            await message.answer(f"Stopped at #{i+1}: {html.escape(str(err))}")
+            clean_err = clean_error_text(err)
+            await message.answer(f"Stopped at #{i+1}: {clean_err}")
             break
 
     if purchased:
         try:
-            await status_msg.edit_text(f"✅ Purchased {len(purchased)} numbers!\n🔍 Checking Telegram registration status, please wait...")
+            await status_msg.edit_text(f"✅ Purchased {len(purchased)} numbers! (100%)\n🔍 Checking Telegram registration status, please wait...")
         except Exception:
             pass
 
@@ -1001,7 +1021,8 @@ async def text_active_numbers(message: Message):
 
         if not (isinstance(res, dict) and res.get("status") == "success"):
             err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
-            await message.answer(f"Error: {html.escape(str(err))}")
+            clean_err = clean_error_text(err)
+            await message.answer(f"Error: {clean_err}")
             return
 
         activations = res.get("data", [])
