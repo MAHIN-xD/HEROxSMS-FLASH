@@ -33,7 +33,7 @@ ADMIN_ID    = 7266067201
 COLOMBIA_ID = 33
 TG_SERVICE  = "tg"
 
-# 0.135 theke 0.150 er moddhe shob available tier dhorbe
+# 0.135 theke 0.150 er moddhe shob available rate grab korbe
 MAX_PRICE   = 0.150
 
 DEFAULT_EXCLUDE_LIST = ["57350", "57351"]
@@ -60,6 +60,38 @@ def cleanup_expired_cache():
     for b_id in list(fresh_batches_cache.keys()):
         if now - fresh_batches_cache[b_id].get("created_at", 0) > 1800:
             del fresh_batches_cache[b_id]
+
+async def start_periodic_janitor():
+    """Background-e RAM ebong cache clean rakhe"""
+    while True:
+        try:
+            await asyncio.sleep(600)
+            cleanup_expired_cache()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logging.error(f"Janitor error: {e}")
+
+async def auto_cancel_bad_numbers(client: HeroSMSClient, bad_items: list):
+    """
+    Occupied ba Banned number-gulo 2-minute HeroSMS lock window seshe auto cancel kore balance refund niye ashe
+    """
+    if not bad_items:
+        return
+    await asyncio.sleep(125)  # 2 minute rule safe delay
+    for item in bad_items:
+        aid = item.get("aid")
+        if not aid:
+            continue
+        try:
+            r = await client.set_status(aid, 8)
+            if (isinstance(r, str) and (r.startswith("ACCESS_CANCEL") or r.startswith("STATUS_CANCEL"))) or (isinstance(r, dict) and r.get("status") == "success"):
+                await db.delete_activation(aid)
+                for k in list(processed_otps.keys()):
+                    if k.startswith(f"{aid}:"):
+                        del processed_otps[k]
+        except Exception as e:
+            logging.warning(f"Auto-cancel failed for {aid}: {e}")
 
 def get_colombia_operator(phone: str) -> str:
     clean = str(phone).lstrip("+").strip()
@@ -830,6 +862,8 @@ async def process_bulk_amount(message: Message, state: FSMContext):
     status_msg = await message.answer(f"Buying {amount} numbers... (0/{amount}) (0%)")
     
     purchased = []
+    batch_db_records = []
+    number_aid_map = {}
     last_edit_time = time.time()
     current_exc = await get_excluded_prefixes_str()
     current_op = await get_preferred_operator_str()
@@ -839,7 +873,6 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 
     for i in range(amount):
         res = None
-        # 3 attempts smart retry loop
         for attempt in range(3):
             res = await client.get_number(
                 service=TG_SERVICE, 
@@ -857,7 +890,8 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             phone = res.get("phoneNumber", "Unknown")
             clean_phone = str(phone).lstrip("+").strip()
             purchased.append(clean_phone)
-            await db.save_activation(aid, message.from_user.id, clean_phone)
+            batch_db_records.append((aid, message.from_user.id, clean_phone))
+            number_aid_map[clean_phone] = aid
             
             now = time.time()
             if (now - last_edit_time >= 3.0) or (i == amount - 1):
@@ -884,6 +918,13 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             break
 
     if purchased:
+        # High performance WAL database batch save
+        if hasattr(db, "save_activations_batch"):
+            await db.save_activations_batch(batch_db_records)
+        else:
+            for aid, uid, p in batch_db_records:
+                await db.save_activation(aid, uid, p)
+
         try:
             await status_msg.edit_text(f"✅ Purchased {len(purchased)} numbers! (100%)\n🔍 Checking Telegram registration status, please wait...")
         except Exception:
@@ -892,19 +933,28 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         check_results = await check_telegram_numbers(purchased)
 
         parsed_items = []
+        bad_numbers_to_cancel = []
+
         for p in purchased:
             op = get_colombia_operator(p)
             formatted_k = f"+{p}"
             raw_st = check_results.get(formatted_k) or check_results.get(p)
             info = format_tg_status(raw_st)
-            parsed_items.append({
+            
+            item_obj = {
                 "phone": p,
+                "aid": number_aid_map.get(p),
                 "operator": op,
                 "badge": info["badge"],
                 "priority": info["priority"],
                 "is_fresh": info["is_fresh"],
                 "is_error": info.get("is_error", False)
-            })
+            }
+            parsed_items.append(item_obj)
+
+            # Auto refund queue: Occupied ba Banned number-gulo collect kora hocche
+            if not info["is_fresh"] and not info.get("is_error") and info["priority"] in [3, 4]:
+                bad_numbers_to_cancel.append(item_obj)
 
         fresh_list = [x for x in parsed_items if x["is_fresh"]]
         other_list = [x for x in parsed_items if not x["is_fresh"] and not x.get("is_error")]
@@ -925,7 +975,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             lines.append(f"🔻 <b>Unavailable / Occupied ({len(other_list)}):</b>")
             for idx, item in enumerate(other_list, 1):
                 lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — <b>{item['badge']}</b>")
-            lines.append("")
+            lines.append("<i>(Auto-cancelling for refund in 2 mins...)</i>\n")
 
         if error_list:
             lines.append(f"⚠️ <b>Check Unverified ({len(error_list)}):</b>")
@@ -934,6 +984,10 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             lines.append("")
 
         lines.append("Waiting for OTPs...")
+
+        # Fire and forget: Background auto-cancel task trigger
+        if bad_numbers_to_cancel:
+            asyncio.create_task(auto_cancel_bad_numbers(client, bad_numbers_to_cancel))
 
         final = "\n".join(lines)
         batch_id = str(uuid.uuid4())[:8]
