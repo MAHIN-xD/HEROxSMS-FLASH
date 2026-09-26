@@ -9,14 +9,15 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 from aiogram.types import BotCommand, BotCommandScopeDefault
 
 import database as db
-from handlers import router, handle_herosms_webhook, set_bot_instance
+from handlers import router, handle_herosms_webhook, set_bot_instance, start_periodic_janitor
 
 TOKEN = os.getenv("BOT_TOKEN")
-PORT  = int(os.getenv("PORT", 8080))
+PORT = int(os.getenv("PORT", 8080))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
 
 async def on_startup(bot: Bot):
     await db.init_db()
+    asyncio.create_task(start_periodic_janitor())
     
     commands = [
         BotCommand(command="start", description="বট শুরু করুন অথবা প্রধান মেনু দেখুন"),
