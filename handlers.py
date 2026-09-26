@@ -12,6 +12,7 @@ from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from aiogram.utils.chat_action import ChatActionSender
+from aiogram.exceptions import TelegramRetryAfter, TelegramBadRequest
 
 import database as db
 from api_client import HeroSMSClient, check_telegram_numbers
@@ -31,9 +32,10 @@ def get_bot_instance():
 ADMIN_ID    = 7266067201
 COLOMBIA_ID = 33
 TG_SERVICE  = "tg"
+
+# 0.135 theke 0.150 er moddhe shob available tier dhorbe
 MAX_PRICE   = 0.150
 
-# WOM prefix blacklist
 DEFAULT_EXCLUDE_LIST = ["57350", "57351"]
 DEFAULT_OPERATOR = "any"
 
@@ -124,38 +126,27 @@ def format_tg_status(raw_status: any) -> dict:
 
 async def get_excluded_prefixes_str() -> str:
     saved = await db.get_setting("excluded_prefixes")
-    if not saved:
-        return ",".join(DEFAULT_EXCLUDE_LIST)
-    return str(saved)
+    return str(saved) if saved else ",".join(DEFAULT_EXCLUDE_LIST)
 
 async def get_preferred_operator_str() -> str:
     saved = await db.get_setting("preferred_operator")
-    if not saved:
-        return DEFAULT_OPERATOR
-    return str(saved)
+    return str(saved) if saved else DEFAULT_OPERATOR
 
 async def get_valid_user_client(user_id: int):
     user = await db.get_user(user_id)
-    if not user:
+    if not user or not user.get("api_key"):
         return None, None
     try:
-        api_key = user["api_key"]
-        if not api_key:
-            return None, None
-        return user, HeroSMSClient(api_key)
+        return user, HeroSMSClient(user["api_key"])
     except Exception:
         return None, None
 
 async def is_allowed(user_id: int) -> bool:
     if user_id == ADMIN_ID: return True
     user = await db.get_user(user_id)
-    try:
-        if user and user["is_banned"]: return False
-    except Exception:
-        pass
+    if user and user.get("is_banned"): return False
     maintenance = await db.get_setting("maintenance")
-    if maintenance == "1": return False
-    return True
+    return maintenance != "1"
 
 # --- Webhook Handler ---
 async def handle_herosms_webhook(request: web.Request):
@@ -177,7 +168,7 @@ async def handle_herosms_webhook(request: web.Request):
     
     code = ""
     if raw_code:
-        match = re.search(r'\b\d{4,6}\b', str(raw_code))
+        match = re.search(r'\b\d{4,8}\b', str(raw_code))
         code = match.group(0) if match else str(raw_code).strip()
 
     direct_phone = data.get("phoneNumber") or data.get("phone") or ""
@@ -226,26 +217,16 @@ async def cmd_start(message: Message, state: FSMContext):
     await db.add_user(message.from_user.id)
     user = await db.get_user(message.from_user.id)
 
-    try:
-        if user and user["is_banned"]:
-            await message.answer("You are banned from using this bot.")
-            return
-    except Exception:
-        pass
+    if user and user.get("is_banned"):
+        await message.answer("You are banned from using this bot.")
+        return
 
     maintenance = await db.get_setting("maintenance")
     if maintenance == "1" and message.from_user.id != ADMIN_ID:
         await message.answer("Bot is under maintenance. Contact Admin.")
         return
 
-    has_api_key = False
-    try:
-        if user and user["api_key"]:
-            has_api_key = True
-    except Exception:
-        has_api_key = False
-
-    if not has_api_key:
+    if not user or not user.get("api_key"):
         await message.answer(
             "Welcome to HeroSMS Bot!\n\nPlease send your HeroSMS API Key to get started.",
             reply_markup=ReplyKeyboardRemove()
@@ -292,7 +273,7 @@ async def cb_menu_main(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     if not await is_allowed(callback.from_user.id): return
     try: await callback.message.delete()
-    except: pass
+    except Exception: pass
     await callback.message.answer("Main Menu:", reply_markup=kb.main_reply_menu())
 
 # --- /balance ---
@@ -461,12 +442,9 @@ async def cmd_retry_number(message: Message):
 
         retry_res = await client.set_status(aid_to_retry, 3)
 
-        if isinstance(retry_res, str) and (
-            retry_res.startswith("ACCESS_RETRY_GET") or
-            retry_res.startswith("STATUS_WAIT_RETRY") or
-            retry_res.startswith("STATUS_WAIT_CODE") or
-            retry_res.startswith("ACCESS_ACTIVATION")
-        ):
+        if isinstance(retry_res, str) and any(retry_res.startswith(prefix) for prefix in [
+            "ACCESS_RETRY_GET", "STATUS_WAIT_RETRY", "STATUS_WAIT_CODE", "ACCESS_ACTIVATION"
+        ]):
             clean_p = str(phone_num).lstrip("+")
             await message.answer(
                 f"Retry mode activated.\n\n"
@@ -506,7 +484,6 @@ async def cmd_get_all_sms(message: Message):
                     break
 
         res = await client.get_all_sms(aid)
-
         if not res or not isinstance(res, dict):
             err = str(res) if res else "No response"
             clean_err = clean_error_text(err)
@@ -555,7 +532,6 @@ async def cmd_stats(message: Message):
         date_arg = args[1].strip() if len(args) >= 2 else None
 
         res = await client.get_stats(date_arg)
-
         if not res or not isinstance(res, dict) or "data" not in res:
             err = res.get("details") or res.get("title") or str(res) if isinstance(res, dict) else str(res)
             clean_err = clean_error_text(err)
@@ -628,15 +604,10 @@ async def cmd_history(message: Message):
             limit = min(int(args[1]), 30)
 
         res = await client.get_history(size=limit)
-
         if not res or not isinstance(res, list):
             err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
             clean_err = clean_error_text(err)
             await message.answer(f"History not found: {clean_err}")
-            return
-
-        if not res:
-            await message.answer("No activation history found.")
             return
 
         lines = [f"Latest {len(res)} Activations:\n"]
@@ -676,7 +647,6 @@ async def cmd_activations_history(message: Message):
         from_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
 
         res = await client.get_activations_history(from_date=from_date, to_date=to_date, size=15)
-
         if not res or not isinstance(res, dict) or "data" not in res:
             res_legacy = await client.get_history(size=10)
             if isinstance(res_legacy, list) and res_legacy:
@@ -755,7 +725,7 @@ async def cmd_cancel_number(message: Message):
             clean_err = clean_error_text(err)
             await message.answer(f"Failed to cancel: {clean_err}")
 
-# নিরাপদ cb_cancel_single
+# Single cancel callback
 @router.callback_query(F.data.startswith("single_cancel_"))
 async def cb_cancel_single(callback: CallbackQuery):
     aid = callback.data[len("single_cancel_"):]
@@ -778,7 +748,7 @@ async def cb_cancel_single(callback: CallbackQuery):
         clean_err = clean_error_text(err)
         await callback.answer(f"Error: {clean_err}", show_alert=True)
 
-# নিরাপদ cb_check_sms
+# Single check SMS callback
 @router.callback_query(F.data.startswith("check_"))
 async def cb_check_sms(callback: CallbackQuery):
     aid = callback.data[len("check_"):]
@@ -833,7 +803,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
     try:
         amount = int(text)
         if not (1 <= amount <= 50): raise ValueError
-    except:
+    except Exception:
         await message.answer("Enter a valid number between 1 and 50.")
         return
 
@@ -853,7 +823,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 
     for i in range(amount):
         res = None
-        # 3-try smart retry loop
+        # 3 attempts smart retry loop
         for attempt in range(3):
             res = await client.get_number(
                 service=TG_SERVICE, 
@@ -864,7 +834,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             )
             if isinstance(res, dict) and "activationId" in res:
                 break
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(0.8) # 0.8s interval
 
         if isinstance(res, dict) and "activationId" in res:
             aid = str(res["activationId"])
@@ -887,7 +857,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
                         upd_text += f"\n...and {len(purchased)-10} earlier"
                     await status_msg.edit_text(upd_text, parse_mode=ParseMode.HTML)
                     last_edit_time = now
-                except Exception:
+                except (TelegramRetryAfter, TelegramBadRequest, Exception):
                     pass
             
             await asyncio.sleep(0.3)
@@ -965,7 +935,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             for part in [final[j:j+4000] for j in range(0, len(final), 4000)]:
                 await message.answer(part, parse_mode=ParseMode.HTML)
             try: await status_msg.delete()
-            except: pass
+            except Exception: pass
         else:
             await status_msg.edit_text(final, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
     else:
@@ -1018,7 +988,6 @@ async def text_active_numbers(message: Message):
             return
 
         res = await client.get_active_activations()
-
         if not (isinstance(res, dict) and res.get("status") == "success"):
             err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
             clean_err = clean_error_text(err)
@@ -1258,6 +1227,7 @@ async def process_broadcast(message: Message, state: FSMContext):
         try:
             await message.bot.send_message(uid, f"Broadcast:\n\n{message.text}")
             sent += 1
+            await asyncio.sleep(0.05)  # Telegram API flood ban rodh korar jonno safe delay
         except Exception:
             pass
     await message.answer(f"Sent to {sent} users.")
@@ -1273,17 +1243,14 @@ async def cb_admin_ban(callback: CallbackQuery, state: FSMContext):
 async def process_ban_id(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: return
     try: target = int(message.text.strip())
-    except:
+    except Exception:
         await message.answer("Invalid ID.")
         return
     user = await db.get_user(target)
     if not user:
         await message.answer("User not found.")
         return
-    try:
-        new_status = not bool(user["is_banned"])
-    except Exception:
-        new_status = True
+    new_status = not bool(user.get("is_banned", False))
     await db.set_ban_status(target, new_status)
     label = "Banned" if new_status else "Unbanned"
     await message.answer(f"User {target} {label}.")
