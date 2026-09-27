@@ -22,22 +22,14 @@ async def on_startup(bot: Bot):
     commands = [
         BotCommand(command="start", description="বট শুরু করুন অথবা প্রধান মেনু দেখুন"),
         BotCommand(command="balance", description="বর্তমান HeroSMS ব্যালেন্স চেক করুন"),
-        BotCommand(command="api", description="নতুন API Key সেট অথবা পরিবর্তন করুন"),
         BotCommand(command="ok", description="ওটিপি আসা সম্পন্ন নম্বরগুলো ফিনিশ করুন"),
-        BotCommand(command="check_operators", description="লাইভ অপারেটর তালিকা দেখুন"),
         BotCommand(command="stats", description="আজকের সাকসেস রেট ও পরিসংখ্যান"),
-        BotCommand(command="getallsms", description="সবগুলো এসএমএস দেখুন (/getallsms <ID/নম্বর>)"),
-        BotCommand(command="history", description="সাম্প্রতিক অ্যাক্টিভেশন তালিকা"),
-        BotCommand(command="act_history", description="৭ দিনের মোট খরচ ও সফলতার রিপোর্ট"),
-        BotCommand(command="retry", description="কোড পুনরায় চেয়ে অপেক্ষা করুন (/retry <নম্বর/ID>)"),
-        BotCommand(command="cancel", description="চলমান নম্বর বাতিল করুন (/cancel <নম্বর/ID>)"),
         BotCommand(command="exclude", description="প্রিফিক্স ব্লকলিস্টে যোগ করুন (/exclude 57300)"),
         BotCommand(command="unexclude", description="প্রিফিক্স ব্লকলিস্ট থেকে সরান (/unexclude 57350)"),
         BotCommand(command="exclude_list", description="বাদ থাকা প্রিফিক্স তালিকা দেখুন"),
         BotCommand(command="reset_exclude", description="ব্লকলিস্ট রিসেট করে ডিফল্ট 57350 করুন"),
         BotCommand(command="operator", description="অপারেটর সেট করুন (/operator claro,tigo বা any)"),
         BotCommand(command="operator_list", description="বর্তমানে সেট করা অপারেটর দেখুন"),
-        BotCommand(command="reset_operator", description="অপারেটর রিসেট করে any করুন"),
     ]
     await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
     logging.info("Telegram bot command menu registered.")
