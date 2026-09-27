@@ -567,6 +567,7 @@ async def cmd_get_all_sms(message: Message):
         await message.answer(final_text, parse_mode=ParseMode.HTML)
 
 # --- /stats ---
+# --- /stats ---
 @router.message(Command("stats", "statistics"))
 async def cmd_stats(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -587,11 +588,20 @@ async def cmd_stats(message: Message):
             return
 
         data = res.get("data", {})
+        display_date = date_arg or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        # Jodi ajker stats faka thake, tokhon auto ager diner (yesterday) stats check korbe
+        if (not data or not isinstance(data, dict)) and not date_arg:
+            prev_date = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+            res_prev = await client.get_stats(prev_date)
+            if res_prev and isinstance(res_prev, dict) and res_prev.get("data"):
+                data = res_prev.get("data")
+                display_date = f"{prev_date} (Yesterday)"
+
         if not data or not isinstance(data, dict):
-            await message.answer("No statistics found for the selected date.")
+            await message.answer("HeroSMS is still compiling today's statistics. Please check back in a few minutes, or specify a date: <code>/stats 2026-09-26</code>", parse_mode=ParseMode.HTML)
             return
 
-        display_date = date_arg or datetime.now(timezone.utc).strftime("%Y-%m-%d")
         lines = [f"HeroSMS Live Stats ({display_date}):\n"]
 
         total_purchased = 0
