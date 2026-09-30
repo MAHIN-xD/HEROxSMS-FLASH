@@ -104,7 +104,7 @@ def get_colombia_operator(phone: str) -> str:
         return "Tigo"
     elif prefix in ["315", "316", "317", "318"]:
         return "Movistar"
-    elif prefix in ["350", "351"]:
+    elif prefix in ["350", "351", "333"]:
         return "WOM"
     elif prefix in ["319"]:
         return "Virgin"
@@ -139,7 +139,7 @@ def format_tg_status(raw_status: any) -> dict:
     if any(w in st for w in fresh_signals):
         if "banned" in st and not any(neg in st for neg in ["not", "un", "no", "non", "false"]):
             return {"badge": "🚫 Banned", "priority": 4, "is_fresh": False, "is_error": False}
-        return {"badge": "✅ Fresh", "priority": 1, "is_fresh": True, "is_error": False}
+        return {"badge": "✅", "priority": 1, "is_fresh": True, "is_error": False}
 
     locked_signals = ["flood", "locked", "lock", "wait", "restricted", "2fa", "password", "has_password"]
     if any(w in st for w in locked_signals):
@@ -154,7 +154,7 @@ def format_tg_status(raw_status: any) -> dict:
         return {"badge": "🚫 Banned", "priority": 4, "is_fresh": False, "is_error": False}
 
     clean = clean_error_text(st)
-    return {"badge": f"⚠️ {clean}", "priority": 5, "is_fresh": False, "is_error": False}
+    return {"badge": f"⚠️️ {clean}", "priority": 5, "is_fresh": False, "is_error": False}
 
 async def get_excluded_prefixes_str() -> str:
     saved = await db.get_setting("excluded_prefixes")
@@ -442,7 +442,7 @@ async def cmd_ok_finish(message: Message):
                     op = get_colombia_operator(clean_phone)
                     finished_lines.append(f"• <b>+{clean_phone}</b> ({op}) - Finished ✅")
                 else:
-                    err = r.get("title", str(r)) if isinstance(r, dict) else str(r)
+                    err = r.get("title", str(r)) if isinstance(res, dict) else str(r)
                     clean_err = clean_error_text(err)
                     finished_lines.append(f"• <b>+{clean_phone}</b> - ⚠️ {clean_err}")
             except Exception as e:
@@ -567,7 +567,6 @@ async def cmd_get_all_sms(message: Message):
         await message.answer(final_text, parse_mode=ParseMode.HTML)
 
 # --- /stats ---
-# --- /stats ---
 @router.message(Command("stats", "statistics"))
 async def cmd_stats(message: Message):
     if not await is_allowed(message.from_user.id): return
@@ -590,7 +589,6 @@ async def cmd_stats(message: Message):
         data = res.get("data", {})
         display_date = date_arg or datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-        # Jodi ajker stats faka thake, tokhon auto ager diner (yesterday) stats check korbe
         if (not data or not isinstance(data, dict)) and not date_arg:
             prev_date = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
             res_prev = await client.get_stats(prev_date)
@@ -599,7 +597,7 @@ async def cmd_stats(message: Message):
                 display_date = f"{prev_date} (Yesterday)"
 
         if not data or not isinstance(data, dict):
-            await message.answer("HeroSMS is still compiling today's statistics. Please check back in a few minutes, or specify a date: <code>/stats 2026-09-26</code>", parse_mode=ParseMode.HTML)
+            await message.answer("HeroSMS is still compiling today's statistics. Please check back in a few minutes.", parse_mode=ParseMode.HTML)
             return
 
         lines = [f"HeroSMS Live Stats ({display_date}):\n"]
@@ -874,6 +872,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
     purchased = []
     batch_db_records = []
     number_aid_map = {}
+    number_cost_map = {}
     last_edit_time = time.time()
     current_exc = await get_excluded_prefixes_str()
     current_op = await get_preferred_operator_str()
@@ -898,10 +897,12 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         if isinstance(res, dict) and "activationId" in res:
             aid = str(res["activationId"])
             phone = res.get("phoneNumber", "Unknown")
+            cost_val = res.get("cost")
             clean_phone = str(phone).lstrip("+").strip()
             purchased.append(clean_phone)
             batch_db_records.append((aid, message.from_user.id, clean_phone))
             number_aid_map[clean_phone] = aid
+            number_cost_map[clean_phone] = cost_val
             
             now = time.time()
             if (now - last_edit_time >= 3.0) or (i == amount - 1):
@@ -928,7 +929,6 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             break
 
     if purchased:
-        # High performance WAL database batch save
         if hasattr(db, "save_activations_batch"):
             await db.save_activations_batch(batch_db_records)
         else:
@@ -951,9 +951,13 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             raw_st = check_results.get(formatted_k) or check_results.get(p)
             info = format_tg_status(raw_st)
             
+            cost = number_cost_map.get(p)
+            cost_str = f"${cost:.3f}" if cost is not None else ""
+            
             item_obj = {
                 "phone": p,
                 "aid": number_aid_map.get(p),
+                "cost_str": cost_str,
                 "operator": op,
                 "badge": info["badge"],
                 "priority": info["priority"],
@@ -962,7 +966,6 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             }
             parsed_items.append(item_obj)
 
-            # Auto refund queue: Occupied ba Banned number-gulo collect kora hocche
             if not info["is_fresh"] and not info.get("is_error") and info["priority"] in [3, 4]:
                 bad_numbers_to_cancel.append(item_obj)
 
@@ -979,7 +982,8 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         if fresh_list:
             lines.append(f"🟢 <b>Fresh Numbers ({len(fresh_list)}):</b>")
             for idx, item in enumerate(fresh_list, 1):
-                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — <b>{item['badge']}</b>\n")
+                rate_text = f" <b>{item['cost_str']}</b>" if item.get('cost_str') else ""
+                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — {item['badge']}{rate_text}\n")
 
         if other_list:
             lines.append(f"🔻 <b>Unavailable / Occupied ({len(other_list)}):</b>")
@@ -995,7 +999,6 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 
         lines.append("Waiting for OTPs...")
 
-        # Fire and forget: Background auto-cancel task trigger
         if bad_numbers_to_cancel:
             asyncio.create_task(auto_cancel_bad_numbers(client, bad_numbers_to_cancel))
 
