@@ -151,41 +151,60 @@ class HeroSMSClient:
         return await self._get("getOperators", **params)
 
     async def get_number(self, service: str, country: int, max_price: float = None, phone_exception: str = None, operator: str = None):
-        params = {"service": service, "country": country}
+        params = {
+            "service": service,
+            "country": str(country)
+        }
         
-        # Dual-binding: 0 theke suru kore max_price porjonto shob tier dhorbe
         if max_price is not None:
-            formatted_price = f"{float(max_price):.4f}".rstrip('0').rstrip('.')
-            params["maxPrice"] = formatted_price
-            params["max_price"] = formatted_price
-        
+            params["maxPrice"] = str(max_price)
+
         if phone_exception:
             if isinstance(phone_exception, (list, tuple)):
-                clean_exc = ",".join(str(p).strip().lstrip("+") for p in phone_exception)
+                clean_exc = ",".join(str(p).strip().lstrip("+") for p in phone_exception if str(p).strip())
             else:
                 clean_exc = str(phone_exception).strip().lstrip("+")
-            params["phoneException"] = clean_exc
-            params["phone_exception"] = clean_exc
+            if clean_exc:
+                params["phoneException"] = clean_exc
 
-        if operator and str(operator).lower() != "any":
+        if operator and str(operator).strip().lower() not in ["any", "none", ""]:
             params["operator"] = str(operator).strip().lower()
 
         res = await self._get("getNumberV2", **params)
 
+        # String response format: ACCESS_NUMBER:ID:PHONE:PRICE
         if isinstance(res, str) and res.startswith("ACCESS_NUMBER"):
             parts = res.split(":")
             if len(parts) >= 3:
-                cost = float(parts[3]) if len(parts) >= 4 and parts[3].replace('.', '', 1).isdigit() else None
+                cost_val = None
+                if len(parts) >= 4:
+                    try:
+                        cost_val = float(parts[3].strip())
+                    except Exception:
+                        pass
                 return {
                     "status": "SUCCESS",
-                    "activationId": parts[1],
-                    "phoneNumber": parts[2],
-                    "cost": cost
+                    "activationId": parts[1].strip(),
+                    "phoneNumber": parts[2].strip(),
+                    "cost": cost_val
                 }
         
-        if isinstance(res, dict) and "activationId" in res:
-            res["status"] = "SUCCESS"
-            return res
+        # JSON dictionary response format
+        if isinstance(res, dict) and ("activationId" in res or "id" in res):
+            aid = str(res.get("activationId") or res.get("id"))
+            p_num = str(res.get("phoneNumber") or res.get("phone") or "")
+            raw_cost = res.get("cost") or res.get("price") or res.get("activationCost") or res.get("rate")
+            try:
+                parsed_cost = float(raw_cost) if raw_cost is not None else None
+            except Exception:
+                parsed_cost = None
+
+            return {
+                "status": "SUCCESS",
+                "activationId": aid,
+                "phoneNumber": p_num,
+                "cost": parsed_cost
+            }
 
         return res
 
