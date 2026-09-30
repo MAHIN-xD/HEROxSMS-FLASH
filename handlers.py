@@ -442,7 +442,7 @@ async def cmd_ok_finish(message: Message):
                     op = get_colombia_operator(clean_phone)
                     finished_lines.append(f"• <b>+{clean_phone}</b> ({op}) - Finished ✅")
                 else:
-                    err = r.get("title", str(r)) if isinstance(res, dict) else str(r)
+                    err = r.get("title", str(r)) if isinstance(r, dict) else str(r)
                     clean_err = clean_error_text(err)
                     finished_lines.append(f"• <b>+{clean_phone}</b> - ⚠️ {clean_err}")
             except Exception as e:
@@ -898,11 +898,22 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             aid = str(res["activationId"])
             phone = res.get("phoneNumber", "Unknown")
             cost_val = res.get("cost")
+            
             clean_phone = str(phone).lstrip("+").strip()
             purchased.append(clean_phone)
             batch_db_records.append((aid, message.from_user.id, clean_phone))
+            
+            # Map with both clean and raw keys to guarantee match
             number_aid_map[clean_phone] = aid
-            number_cost_map[clean_phone] = cost_val
+            number_aid_map[f"+{clean_phone}"] = aid
+            
+            if cost_val is not None:
+                formatted_cost = f"${float(cost_val):.3f}"
+                number_cost_map[clean_phone] = formatted_cost
+                number_cost_map[f"+{clean_phone}"] = formatted_cost
+            else:
+                number_cost_map[clean_phone] = "$0.145"
+                number_cost_map[f"+{clean_phone}"] = "$0.145"
             
             now = time.time()
             if (now - last_edit_time >= 3.0) or (i == amount - 1):
@@ -946,17 +957,18 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         bad_numbers_to_cancel = []
 
         for p in purchased:
-            op = get_colombia_operator(p)
-            formatted_k = f"+{p}"
-            raw_st = check_results.get(formatted_k) or check_results.get(p)
+            clean_p = str(p).lstrip("+").strip()
+            op = get_colombia_operator(clean_p)
+            formatted_k = f"+{clean_p}"
+            raw_st = check_results.get(formatted_k) or check_results.get(clean_p)
             info = format_tg_status(raw_st)
             
-            cost = number_cost_map.get(p)
-            cost_str = f"${cost:.3f}" if cost is not None else ""
+            # Fetch mapped live price
+            cost_str = number_cost_map.get(clean_p) or number_cost_map.get(formatted_k) or "$0.145"
             
             item_obj = {
-                "phone": p,
-                "aid": number_aid_map.get(p),
+                "phone": clean_p,
+                "aid": number_aid_map.get(clean_p),
                 "cost_str": cost_str,
                 "operator": op,
                 "badge": info["badge"],
@@ -982,7 +994,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         if fresh_list:
             lines.append(f"🟢 <b>Fresh Numbers ({len(fresh_list)}):</b>")
             for idx, item in enumerate(fresh_list, 1):
-                rate_text = f" <b>{item['cost_str']}</b>" if item.get('cost_str') else ""
+                rate_text = f" <b>{item['cost_str']}</b>"
                 lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — {item['badge']}{rate_text}\n")
 
         if other_list:
