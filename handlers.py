@@ -154,7 +154,7 @@ def format_tg_status(raw_status: any) -> dict:
         return {"badge": "🚫 Banned", "priority": 4, "is_fresh": False, "is_error": False}
 
     clean = clean_error_text(st)
-    return {"badge": f"⚠️️ {clean}", "priority": 5, "is_fresh": False, "is_error": False}
+    return {"badge": f"⚠ {clean}", "priority": 5, "is_fresh": False, "is_error": False}
 
 async def get_excluded_prefixes_str() -> str:
     saved = await db.get_setting("excluded_prefixes")
@@ -377,6 +377,254 @@ async def cmd_check_live_operators(message: Message):
                 await message.answer("Colombia-r jonne kono specific operator list nei. Shudhu <code>/operator any</code> kaj korbe.", parse_mode=ParseMode.HTML)
         else:
             await message.answer("❌ Operator list load kora jayni.")
+
+# --- /live (Live Stock & Rate) ---
+@router.message(Command("live", "prices"))
+async def cmd_live_prices(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+        user, client = await get_valid_user_client(message.from_user.id)
+        if not user or not client:
+            await message.answer("Please set your HeroSMS API Key first with /api")
+            return
+
+        prices_res = await client.get_prices(country=COLOMBIA_ID, service=TG_SERVICE)
+        if not isinstance(prices_res, dict):
+            await message.answer("❌ Live prices load kora jayni. Please try again.")
+            return
+
+        c_str = str(COLOMBIA_ID)
+        s_str = str(TG_SERVICE)
+        country_data = prices_res.get(c_str, {})
+        service_data = country_data.get(s_str, {})
+
+        if not service_data or not isinstance(service_data, dict):
+            await message.answer("ℹ️ Currently no live stock found for Telegram in Colombia.")
+            return
+
+        lines = ["📡 <b>HeroSMS Live Stock & Prices (Colombia - TG):</b>\n"]
+        found = False
+
+        for op_name, details in service_data.items():
+            if isinstance(details, dict):
+                cost = float(details.get("cost") or details.get("price") or 0.0)
+                count = int(details.get("count") or 0)
+                if count > 0:
+                    found = True
+                    lines.append(f"• <b>{op_name.upper()}</b>: <code>${cost:.3f}</code> (Stock: <b>{count}</b> ta)")
+
+        if not found:
+            await message.answer("ℹ️ Operators found, but stock is currently 0.")
+            return
+
+        lines.append("\n💡 <b>Direct Buy Command:</b>")
+        lines.append("<code>/buy &lt;operator&gt; &lt;amount&gt;</code>")
+        lines.append("<i>Example:</i> <code>/buy claro 5</code>")
+
+        await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
+
+# --- /buy <operator> <amount> (Direct Buy) ---
+@router.message(Command("buy"))
+async def cmd_direct_buy(message: Message):
+    if not await is_allowed(message.from_user.id): return
+    args = message.text.split()
+    if len(args) < 3:
+        await message.answer(
+            "⚠️ <b>Usage:</b> <code>/buy &lt;operator&gt; &lt;amount&gt;</code>\n"
+            "<i>Example:</i> <code>/buy claro 5</code>\n\n"
+            "💡 Live stock check korte likhun: /live",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    target_op = args[1].strip().lower()
+    try:
+        amount = int(args[2].strip())
+        if not (1 <= amount <= 50): raise ValueError
+    except Exception:
+        await message.answer("Please enter a valid amount between 1 and 50.")
+        return
+
+    user, client = await get_valid_user_client(message.from_user.id)
+    if not user or not client:
+        await message.answer("Please set your API key first with /api")
+        return
+
+    prices_res = await client.get_prices(country=COLOMBIA_ID, service=TG_SERVICE)
+    detected_price = MAX_PRICE
+    if isinstance(prices_res, dict):
+        c_dict = prices_res.get(str(COLOMBIA_ID), {}).get(str(TG_SERVICE), {})
+        if target_op in c_dict and isinstance(c_dict[target_op], dict):
+            live_cost = float(c_dict[target_op].get("cost") or c_dict[target_op].get("price") or 0.0)
+            if live_cost > 0:
+                detected_price = live_cost + 0.005
+
+    status_msg = await message.answer(
+        f"⏳ Buying {amount} numbers for <b>{target_op.upper()}</b> (Max ${detected_price:.3f})... (0/{amount})",
+        parse_mode=ParseMode.HTML
+    )
+
+    purchased = []
+    batch_db_records = []
+    number_aid_map = {}
+    number_cost_map = {}
+    last_edit_time = time.time()
+    current_exc = await get_excluded_prefixes_str()
+    api_exc = current_exc if current_exc else None
+
+    for i in range(amount):
+        res = None
+        for attempt in range(3):
+            res = await client.get_number(
+                service=TG_SERVICE,
+                country=COLOMBIA_ID,
+                max_price=detected_price,
+                phone_exception=api_exc,
+                operator=target_op
+            )
+            if isinstance(res, dict) and "activationId" in res:
+                break
+            await asyncio.sleep(0.8)
+
+        if isinstance(res, dict) and "activationId" in res:
+            aid = str(res["activationId"])
+            phone = res.get("phoneNumber", "Unknown")
+            cost_val = res.get("cost")
+
+            clean_phone = str(phone).lstrip("+").strip()
+            purchased.append(clean_phone)
+            batch_db_records.append((aid, message.from_user.id, clean_phone))
+
+            number_aid_map[clean_phone] = aid
+            number_aid_map[f"+{clean_phone}"] = aid
+
+            if cost_val is not None:
+                formatted_cost = f"${float(cost_val):.3f}"
+                number_cost_map[clean_phone] = formatted_cost
+                number_cost_map[f"+{clean_phone}"] = formatted_cost
+            else:
+                number_cost_map[clean_phone] = f"${detected_price:.3f}"
+                number_cost_map[f"+{clean_phone}"] = f"${detected_price:.3f}"
+
+            now = time.time()
+            if (now - last_edit_time >= 3.0) or (i == amount - 1):
+                try:
+                    display_lines = purchased[-10:]
+                    lines = "\n".join(
+                        f"{n}. <b>+{p}</b> ({get_colombia_operator(p)})" 
+                        for n, p in enumerate(display_lines, len(purchased)-len(display_lines)+1)
+                    )
+                    percent = int((len(purchased) / amount) * 100)
+                    upd_text = f"Buying {amount} numbers ({target_op.upper()})... ({len(purchased)}/{amount}) ({percent}%)\n\n{lines}"
+                    if len(purchased) > 10:
+                        upd_text += f"\n...and {len(purchased)-10} earlier"
+                    await status_msg.edit_text(upd_text, parse_mode=ParseMode.HTML)
+                    last_edit_time = now
+                except (TelegramRetryAfter, TelegramBadRequest, Exception):
+                    pass
+
+            await asyncio.sleep(0.3)
+        else:
+            err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
+            clean_err = clean_error_text(err)
+            await message.answer(f"Stopped at #{i+1}: {clean_err}")
+            break
+
+    if purchased:
+        if hasattr(db, "save_activations_batch"):
+            await db.save_activations_batch(batch_db_records)
+        else:
+            for aid, uid, p in batch_db_records:
+                await db.save_activation(aid, uid, p)
+
+        try:
+            await status_msg.edit_text(f"✅ Purchased {len(purchased)} numbers! (100%)\n🔍 Checking Telegram registration status, please wait...")
+        except Exception:
+            pass
+
+        check_results = await check_telegram_numbers(purchased)
+
+        parsed_items = []
+        bad_numbers_to_cancel = []
+
+        for p in purchased:
+            clean_p = str(p).lstrip("+").strip()
+            op = get_colombia_operator(clean_p)
+            formatted_k = f"+{clean_p}"
+            raw_st = check_results.get(formatted_k) or check_results.get(clean_p)
+            info = format_tg_status(raw_st)
+
+            cost_str = number_cost_map.get(clean_p) or number_cost_map.get(formatted_k) or f"${detected_price:.3f}"
+
+            item_obj = {
+                "phone": clean_p,
+                "aid": number_aid_map.get(clean_p),
+                "cost_str": cost_str,
+                "operator": op,
+                "badge": info["badge"],
+                "priority": info["priority"],
+                "is_fresh": info["is_fresh"],
+                "is_error": info.get("is_error", False)
+            }
+            parsed_items.append(item_obj)
+
+            if not info["is_fresh"] and not info.get("is_error") and info["priority"] in [3, 4]:
+                bad_numbers_to_cancel.append(item_obj)
+
+        fresh_list = [x for x in parsed_items if x["is_fresh"]]
+        other_list = [x for x in parsed_items if not x["is_fresh"] and not x.get("is_error")]
+        error_list = [x for x in parsed_items if x.get("is_error")]
+        other_list.sort(key=lambda x: x["priority"])
+
+        lines = [
+            f"🎉 <b>Direct Order Completed! ({target_op.upper()})</b>",
+            f"Total: {len(purchased)} numbers (tap any number to copy)\n"
+        ]
+
+        if fresh_list:
+            lines.append(f"🟢 <b>Fresh Numbers ({len(fresh_list)}):</b>")
+            for idx, item in enumerate(fresh_list, 1):
+                rate_text = f" <b>{item['cost_str']}</b>"
+                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — {item['badge']}{rate_text}\n")
+
+        if other_list:
+            lines.append(f"🔻 <b>Unavailable / Occupied ({len(other_list)}):</b>")
+            for idx, item in enumerate(other_list, 1):
+                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — <b>{item['badge']}</b>")
+            lines.append("<i>(Auto-cancelling for refund in 2 mins...)</i>\n")
+
+        if error_list:
+            lines.append(f"⚠️ <b>Check Unverified ({len(error_list)}):</b>")
+            for idx, item in enumerate(error_list, 1):
+                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — <b>{item['badge']}</b>")
+            lines.append("")
+
+        lines.append("Waiting for OTPs...")
+
+        if bad_numbers_to_cancel:
+            asyncio.create_task(auto_cancel_bad_numbers(client, bad_numbers_to_cancel))
+
+        final = "\n".join(lines)
+        batch_id = str(uuid.uuid4())[:8]
+        fresh_phones = [x["phone"] for x in fresh_list]
+        fresh_batches_cache[batch_id] = {
+            "summary": final,
+            "fresh_phones": fresh_phones,
+            "created_at": time.time()
+        }
+        cleanup_expired_cache()
+
+        reply_markup = kb.bulk_result_menu(batch_id, len(fresh_list))
+
+        if len(final) > 4000:
+            for part in [final[j:j+4000] for j in range(0, len(final), 4000)]:
+                await message.answer(part, parse_mode=ParseMode.HTML)
+            try: await status_msg.delete()
+            except Exception: pass
+        else:
+            await status_msg.edit_text(final, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+    else:
+        await status_msg.edit_text(f"❌ Could not purchase any numbers for {target_op.upper()}.")
 
 # --- /ok ---
 @router.message(Command("ok"))
@@ -838,7 +1086,7 @@ async def cb_check_sms(callback: CallbackQuery):
     else:
         await callback.answer("Error checking status.", show_alert=True)
 
-# --- Bulk Buy Handlers ---
+# --- Bulk Buy ---
 @router.message(F.text == "Bulk Buy Numbers")
 async def text_bulk_buy(message: Message, state: FSMContext):
     if not await is_allowed(message.from_user.id): return
@@ -863,44 +1111,11 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         await message.answer("Enter a valid number between 1 and 50.")
         return
 
-    # Amount save kore price range menu dekhano
-    await state.update_data(bulk_amount=amount)
-    await message.answer(
-        f"🎯 <b>Quantity: {amount} numbers</b>\n\nPlease select your preferred price tier:",
-        reply_markup=kb.price_range_menu(),
-        parse_mode=ParseMode.HTML
-    )
-
-@router.callback_query(F.data.startswith("prange_"))
-async def process_price_range_selection(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    amount = data.get("bulk_amount")
-    
-    if not amount:
-        await callback.answer("Session expired. Please click Bulk Buy again.", show_alert=True)
-        return
-
-    selected_tier = callback.data.split("_")[1]
     await state.clear()
-
-    if selected_tier == "low":
-        target_min_price = 0.01
-        target_max_price = 0.139
-        range_label = "Below $0.14"
-    else:
-        target_min_price = 0.140
-        target_max_price = 0.150
-        range_label = "$0.140 - $0.150"
-
-    user, client = await get_valid_user_client(callback.from_user.id)
+    user, client = await get_valid_user_client(message.from_user.id)
     if not user or not client: return
 
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
-
-    status_msg = await callback.message.answer(f"Buying {amount} numbers ({range_label})... (0/{amount}) (0%)")
+    status_msg = await message.answer(f"Buying {amount} numbers... (0/{amount}) (0%)")
     
     purchased = []
     batch_db_records = []
@@ -913,42 +1128,28 @@ async def process_price_range_selection(callback: CallbackQuery, state: FSMConte
     api_exc = current_exc if current_exc else None
     api_op = current_op if current_op and current_op.lower() != "any" else None
 
-    consecutive_empty = 0
-
     for i in range(amount):
         res = None
         for attempt in range(3):
             res = await client.get_number(
                 service=TG_SERVICE, 
                 country=COLOMBIA_ID, 
-                max_price=target_max_price,
+                max_price=MAX_PRICE,
                 phone_exception=api_exc,
                 operator=api_op
             )
             if isinstance(res, dict) and "activationId" in res:
-                # 2nd option er jonno: rate target_min_price er cheye kom hole cancel kore abar try korbe
-                raw_cost = res.get("cost")
-                if raw_cost is not None and float(raw_cost) < target_min_price:
-                    # Cancel out-of-range number
-                    try:
-                        await client.set_status(str(res["activationId"]), 8)
-                    except Exception:
-                        pass
-                    res = None
-                    await asyncio.sleep(0.5)
-                    continue
                 break
             await asyncio.sleep(0.8)
 
         if isinstance(res, dict) and "activationId" in res:
-            consecutive_empty = 0
             aid = str(res["activationId"])
             phone = res.get("phoneNumber", "Unknown")
             cost_val = res.get("cost")
             
             clean_phone = str(phone).lstrip("+").strip()
             purchased.append(clean_phone)
-            batch_db_records.append((aid, callback.from_user.id, clean_phone))
+            batch_db_records.append((aid, message.from_user.id, clean_phone))
             
             number_aid_map[clean_phone] = aid
             number_aid_map[f"+{clean_phone}"] = aid
@@ -958,8 +1159,8 @@ async def process_price_range_selection(callback: CallbackQuery, state: FSMConte
                 number_cost_map[clean_phone] = formatted_cost
                 number_cost_map[f"+{clean_phone}"] = formatted_cost
             else:
-                number_cost_map[clean_phone] = f"${target_max_price:.3f}"
-                number_cost_map[f"+{clean_phone}"] = f"${target_max_price:.3f}"
+                number_cost_map[clean_phone] = "$0.145"
+                number_cost_map[f"+{clean_phone}"] = "$0.145"
             
             now = time.time()
             if (now - last_edit_time >= 3.0) or (i == amount - 1):
@@ -970,7 +1171,7 @@ async def process_price_range_selection(callback: CallbackQuery, state: FSMConte
                         for n, p in enumerate(display_lines, len(purchased)-len(display_lines)+1)
                     )
                     percent = int((len(purchased) / amount) * 100)
-                    upd_text = f"Buying {amount} numbers ({range_label})... ({len(purchased)}/{amount}) ({percent}%)\n\n{lines}"
+                    upd_text = f"Buying {amount} numbers... ({len(purchased)}/{amount}) ({percent}%)\n\n{lines}"
                     if len(purchased) > 10:
                         upd_text += f"\n...and {len(purchased)-10} earlier"
                     await status_msg.edit_text(upd_text, parse_mode=ParseMode.HTML)
@@ -980,12 +1181,10 @@ async def process_price_range_selection(callback: CallbackQuery, state: FSMConte
             
             await asyncio.sleep(0.3)
         else:
-            consecutive_empty += 1
             err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
             clean_err = clean_error_text(err)
-            if consecutive_empty >= 2:
-                await callback.message.answer(f"⚠️ Stock empty or stopped in {range_label} range: {clean_err}")
-                break
+            await message.answer(f"Stopped at #{i+1}: {clean_err}")
+            break
 
     if purchased:
         if hasattr(db, "save_activations_batch"):
@@ -1011,7 +1210,7 @@ async def process_price_range_selection(callback: CallbackQuery, state: FSMConte
             raw_st = check_results.get(formatted_k) or check_results.get(clean_p)
             info = format_tg_status(raw_st)
             
-            cost_str = number_cost_map.get(clean_p) or number_cost_map.get(formatted_k) or f"${target_max_price:.3f}"
+            cost_str = number_cost_map.get(clean_p) or number_cost_map.get(formatted_k) or "$0.145"
             
             item_obj = {
                 "phone": clean_p,
@@ -1034,7 +1233,7 @@ async def process_price_range_selection(callback: CallbackQuery, state: FSMConte
         other_list.sort(key=lambda x: x["priority"])
 
         lines = [
-            f"🎉 <b>Bulk Order Completed! ({range_label})</b>",
+            f"🎉 <b>Bulk Order Completed!</b>",
             f"Total: {len(purchased)} numbers (tap any number to copy)\n"
         ]
 
@@ -1075,13 +1274,50 @@ async def process_price_range_selection(callback: CallbackQuery, state: FSMConte
 
         if len(final) > 4000:
             for part in [final[j:j+4000] for j in range(0, len(final), 4000)]:
-                await callback.message.answer(part, parse_mode=ParseMode.HTML)
+                await message.answer(part, parse_mode=ParseMode.HTML)
             try: await status_msg.delete()
             except Exception: pass
         else:
             await status_msg.edit_text(final, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
     else:
-        await status_msg.edit_text(f"❌ Could not purchase any numbers in {range_label} range.")
+        await status_msg.edit_text("Could not purchase any numbers.")
+
+# --- Fresh Numbers Callback ---
+@router.callback_query(F.data.startswith("show_fresh_"))
+async def cb_show_fresh_numbers(callback: CallbackQuery):
+    cleanup_expired_cache()
+    batch_id = callback.data[len("show_fresh_"):]
+    batch_data = fresh_batches_cache.get(batch_id)
+
+    if not batch_data or not batch_data.get("fresh_phones"):
+        await callback.answer("No fresh numbers found or session expired.", show_alert=True)
+        return
+
+    fresh_phones = batch_data["fresh_phones"]
+    await callback.message.edit_text(
+        f"🟢 <b>Fresh Numbers ({len(fresh_phones)})</b>\n<i>Tap any number to copy:</i>",
+        reply_markup=kb.fresh_numbers_menu(fresh_phones, batch_id),
+        parse_mode=ParseMode.HTML
+    )
+
+@router.callback_query(F.data.startswith("back_bulk_"))
+async def cb_back_bulk(callback: CallbackQuery):
+    cleanup_expired_cache()
+    batch_id = callback.data[len("back_bulk_"):]
+    batch_data = fresh_batches_cache.get(batch_id)
+
+    if not batch_data:
+        await callback.answer("Session expired.", show_alert=True)
+        return
+
+    summary = batch_data["summary"]
+    fresh_count = len(batch_data.get("fresh_phones", []))
+    await callback.message.edit_text(
+        summary,
+        reply_markup=kb.bulk_result_menu(batch_id, fresh_count),
+        parse_mode=ParseMode.HTML
+    )
+
 # --- Active Numbers ---
 @router.message(F.text == "Active Numbers")
 async def text_active_numbers(message: Message):
