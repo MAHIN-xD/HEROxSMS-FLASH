@@ -13,15 +13,6 @@ def back_button(callback_data: str = "menu_main") -> InlineKeyboardMarkup:
     b.button(text="Back", callback_data=callback_data)
     return b.as_markup()
 
-def price_range_menu() -> InlineKeyboardMarkup:
-    """Price range select korar inline keyboard"""
-    b = InlineKeyboardBuilder()
-    b.button(text="🟢 Below $0.14 (Max $0.139)", callback_data="prange_low")
-    b.button(text="🟡 $0.140 - $0.150 Range", callback_data="prange_mid")
-    b.button(text="❌ Cancel", callback_data="menu_main")
-    b.adjust(1)
-    return b.as_markup()
-
 def number_action_menu(activation_id: str) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="Check SMS", callback_data=f"check_{activation_id}")
@@ -59,6 +50,7 @@ def active_numbers_menu(activations: list, page: int = 0, per_page: int = 10) ->
     return b.as_markup()
 
 def otp_copy_menu(otp_code: str) -> InlineKeyboardMarkup:
+    """বাটনে শুধু ওটিপি কোড থাকবে, কোনো বাড়তি লেখা থাকবে না"""
     b = InlineKeyboardBuilder()
     code_str = str(otp_code).strip()
     try:
