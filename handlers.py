@@ -838,7 +838,7 @@ async def cb_check_sms(callback: CallbackQuery):
     else:
         await callback.answer("Error checking status.", show_alert=True)
 
-# --- Bulk Buy ---
+# --- Bulk Buy Handlers ---
 @router.message(F.text == "Bulk Buy Numbers")
 async def text_bulk_buy(message: Message, state: FSMContext):
     if not await is_allowed(message.from_user.id): return
@@ -863,11 +863,44 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         await message.answer("Enter a valid number between 1 and 50.")
         return
 
+    # Amount save kore price range menu dekhano
+    await state.update_data(bulk_amount=amount)
+    await message.answer(
+        f"🎯 <b>Quantity: {amount} numbers</b>\n\nPlease select your preferred price tier:",
+        reply_markup=kb.price_range_menu(),
+        parse_mode=ParseMode.HTML
+    )
+
+@router.callback_query(F.data.startswith("prange_"))
+async def process_price_range_selection(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    amount = data.get("bulk_amount")
+    
+    if not amount:
+        await callback.answer("Session expired. Please click Bulk Buy again.", show_alert=True)
+        return
+
+    selected_tier = callback.data.split("_")[1]
     await state.clear()
-    user, client = await get_valid_user_client(message.from_user.id)
+
+    if selected_tier == "low":
+        target_min_price = 0.01
+        target_max_price = 0.139
+        range_label = "Below $0.14"
+    else:
+        target_min_price = 0.140
+        target_max_price = 0.150
+        range_label = "$0.140 - $0.150"
+
+    user, client = await get_valid_user_client(callback.from_user.id)
     if not user or not client: return
 
-    status_msg = await message.answer(f"Buying {amount} numbers... (0/{amount}) (0%)")
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    status_msg = await callback.message.answer(f"Buying {amount} numbers ({range_label})... (0/{amount}) (0%)")
     
     purchased = []
     batch_db_records = []
@@ -880,30 +913,43 @@ async def process_bulk_amount(message: Message, state: FSMContext):
     api_exc = current_exc if current_exc else None
     api_op = current_op if current_op and current_op.lower() != "any" else None
 
+    consecutive_empty = 0
+
     for i in range(amount):
         res = None
         for attempt in range(3):
             res = await client.get_number(
                 service=TG_SERVICE, 
                 country=COLOMBIA_ID, 
-                max_price=MAX_PRICE,
+                max_price=target_max_price,
                 phone_exception=api_exc,
                 operator=api_op
             )
             if isinstance(res, dict) and "activationId" in res:
+                # 2nd option er jonno: rate target_min_price er cheye kom hole cancel kore abar try korbe
+                raw_cost = res.get("cost")
+                if raw_cost is not None and float(raw_cost) < target_min_price:
+                    # Cancel out-of-range number
+                    try:
+                        await client.set_status(str(res["activationId"]), 8)
+                    except Exception:
+                        pass
+                    res = None
+                    await asyncio.sleep(0.5)
+                    continue
                 break
             await asyncio.sleep(0.8)
 
         if isinstance(res, dict) and "activationId" in res:
+            consecutive_empty = 0
             aid = str(res["activationId"])
             phone = res.get("phoneNumber", "Unknown")
             cost_val = res.get("cost")
             
             clean_phone = str(phone).lstrip("+").strip()
             purchased.append(clean_phone)
-            batch_db_records.append((aid, message.from_user.id, clean_phone))
+            batch_db_records.append((aid, callback.from_user.id, clean_phone))
             
-            # Map with both clean and raw keys to guarantee match
             number_aid_map[clean_phone] = aid
             number_aid_map[f"+{clean_phone}"] = aid
             
@@ -912,8 +958,8 @@ async def process_bulk_amount(message: Message, state: FSMContext):
                 number_cost_map[clean_phone] = formatted_cost
                 number_cost_map[f"+{clean_phone}"] = formatted_cost
             else:
-                number_cost_map[clean_phone] = "$0.145"
-                number_cost_map[f"+{clean_phone}"] = "$0.145"
+                number_cost_map[clean_phone] = f"${target_max_price:.3f}"
+                number_cost_map[f"+{clean_phone}"] = f"${target_max_price:.3f}"
             
             now = time.time()
             if (now - last_edit_time >= 3.0) or (i == amount - 1):
@@ -924,7 +970,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
                         for n, p in enumerate(display_lines, len(purchased)-len(display_lines)+1)
                     )
                     percent = int((len(purchased) / amount) * 100)
-                    upd_text = f"Buying {amount} numbers... ({len(purchased)}/{amount}) ({percent}%)\n\n{lines}"
+                    upd_text = f"Buying {amount} numbers ({range_label})... ({len(purchased)}/{amount}) ({percent}%)\n\n{lines}"
                     if len(purchased) > 10:
                         upd_text += f"\n...and {len(purchased)-10} earlier"
                     await status_msg.edit_text(upd_text, parse_mode=ParseMode.HTML)
@@ -934,10 +980,12 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             
             await asyncio.sleep(0.3)
         else:
+            consecutive_empty += 1
             err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
             clean_err = clean_error_text(err)
-            await message.answer(f"Stopped at #{i+1}: {clean_err}")
-            break
+            if consecutive_empty >= 2:
+                await callback.message.answer(f"⚠️ Stock empty or stopped in {range_label} range: {clean_err}")
+                break
 
     if purchased:
         if hasattr(db, "save_activations_batch"):
@@ -963,8 +1011,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             raw_st = check_results.get(formatted_k) or check_results.get(clean_p)
             info = format_tg_status(raw_st)
             
-            # Fetch mapped live price
-            cost_str = number_cost_map.get(clean_p) or number_cost_map.get(formatted_k) or "$0.145"
+            cost_str = number_cost_map.get(clean_p) or number_cost_map.get(formatted_k) or f"${target_max_price:.3f}"
             
             item_obj = {
                 "phone": clean_p,
@@ -987,7 +1034,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         other_list.sort(key=lambda x: x["priority"])
 
         lines = [
-            f"🎉 <b>Bulk Order Completed!</b>",
+            f"🎉 <b>Bulk Order Completed! ({range_label})</b>",
             f"Total: {len(purchased)} numbers (tap any number to copy)\n"
         ]
 
@@ -1028,50 +1075,13 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 
         if len(final) > 4000:
             for part in [final[j:j+4000] for j in range(0, len(final), 4000)]:
-                await message.answer(part, parse_mode=ParseMode.HTML)
+                await callback.message.answer(part, parse_mode=ParseMode.HTML)
             try: await status_msg.delete()
             except Exception: pass
         else:
             await status_msg.edit_text(final, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
     else:
-        await status_msg.edit_text("Could not purchase any numbers.")
-
-# --- Fresh Numbers Callback ---
-@router.callback_query(F.data.startswith("show_fresh_"))
-async def cb_show_fresh_numbers(callback: CallbackQuery):
-    cleanup_expired_cache()
-    batch_id = callback.data[len("show_fresh_"):]
-    batch_data = fresh_batches_cache.get(batch_id)
-
-    if not batch_data or not batch_data.get("fresh_phones"):
-        await callback.answer("No fresh numbers found or session expired.", show_alert=True)
-        return
-
-    fresh_phones = batch_data["fresh_phones"]
-    await callback.message.edit_text(
-        f"🟢 <b>Fresh Numbers ({len(fresh_phones)})</b>\n<i>Tap any number to copy:</i>",
-        reply_markup=kb.fresh_numbers_menu(fresh_phones, batch_id),
-        parse_mode=ParseMode.HTML
-    )
-
-@router.callback_query(F.data.startswith("back_bulk_"))
-async def cb_back_bulk(callback: CallbackQuery):
-    cleanup_expired_cache()
-    batch_id = callback.data[len("back_bulk_"):]
-    batch_data = fresh_batches_cache.get(batch_id)
-
-    if not batch_data:
-        await callback.answer("Session expired.", show_alert=True)
-        return
-
-    summary = batch_data["summary"]
-    fresh_count = len(batch_data.get("fresh_phones", []))
-    await callback.message.edit_text(
-        summary,
-        reply_markup=kb.bulk_result_menu(batch_id, fresh_count),
-        parse_mode=ParseMode.HTML
-    )
-
+        await status_msg.edit_text(f"❌ Could not purchase any numbers in {range_label} range.")
 # --- Active Numbers ---
 @router.message(F.text == "Active Numbers")
 async def text_active_numbers(message: Message):
