@@ -43,6 +43,7 @@ fresh_batches_cache = {}
 MENU_BUTTONS = ["Bulk Buy Numbers", "Finish"]
 
 SETTINGS_CACHE = {}
+sniper_task = None
 
 async def get_cached_setting(key: str, default: str = "") -> str:
     if key in SETTINGS_CACHE:
@@ -88,6 +89,76 @@ async def start_periodic_janitor():
             break
         except Exception as e:
             logging.error(f"Janitor error: {e}")
+
+# --- Background Auto Sniper Engine ---
+async def sniper_background_worker(target_operator: str):
+    bot = get_bot_instance()
+    last_alert_time = 0
+    while True:
+        try:
+            is_active = (await get_cached_setting("sniper_active", "0")) == "1"
+            if not is_active:
+                break
+
+            admin_user = await db.get_user(ADMIN_ID)
+            if admin_user and admin_user.get("api_key"):
+                client = HeroSMSClient(admin_user["api_key"])
+                max_price_limit = await get_dynamic_max_price()
+
+                raw_res = await client.get_prices(country=COLOMBIA_ID, service=TG_SERVICE)
+                c_dict = {}
+                if isinstance(raw_res, dict):
+                    if "33" in raw_res:
+                        c_dict = raw_res["33"].get("tg", raw_res["33"])
+                    elif 33 in raw_res:
+                        c_dict = raw_res[33].get("tg", raw_res[33])
+                    elif "tg" in raw_res:
+                        c_dict = raw_res["tg"].get("33", raw_res["tg"])
+                    else:
+                        for k, v in raw_res.items():
+                            if str(k) == "33" and isinstance(v, dict):
+                                c_dict = v.get("tg", v)
+                                break
+
+                found_cnt = 0
+                found_cost = 0.0
+
+                if isinstance(c_dict, dict):
+                    for op_key, op_info in c_dict.items():
+                        if str(op_key).lower() == target_operator.lower():
+                            if isinstance(op_info, dict):
+                                found_cnt = int(op_info.get("count") or op_info.get("amount") or op_info.get("qty") or 0)
+                                found_cost = float(op_info.get("cost") or op_info.get("price") or op_info.get("rate") or 0.0)
+                            elif isinstance(op_info, (int, str)) and str(op_info).isdigit():
+                                found_cnt = int(op_info)
+                            break
+
+                now = time.time()
+                # Stock paowa gele ebong rate Max Price er niche hole alert pathabe
+                if found_cnt > 0 and (found_cost <= max_price_limit or found_cost == 0.0):
+                    if now - last_alert_time > 30:  # Har 30 second-e 1 bar alert spam prevent
+                        if bot:
+                            rate_text = f"${found_cost:.3f}" if found_cost > 0 else "Market Rate"
+                            alert_text = (
+                                f"🎯 <b>SNIPER FOUND STOCK!</b>\n\n"
+                                f"📡 Operator: <b>{target_operator.upper()}</b>\n"
+                                f"💵 Live Rate: <b>{rate_text}</b> (Max: ${max_price_limit:.3f})\n"
+                                f"📦 Available Stock: <b>{found_cnt} numbers</b>\n\n"
+                                f"Kotogula number kinte chan? Niche click korun:"
+                            )
+                            try:
+                                await bot.send_message(
+                                    ADMIN_ID,
+                                    alert_text,
+                                    reply_markup=kb.sniper_alert_menu(target_operator),
+                                    parse_mode=ParseMode.HTML
+                                )
+                                last_alert_time = now
+                            except Exception:
+                                pass
+        except Exception as e:
+            logging.error(f"Sniper worker error: {e}")
+        await asyncio.sleep(4)
 
 async def auto_cancel_bad_numbers(client: HeroSMSClient, bad_items: list):
     if not bad_items:
@@ -312,12 +383,40 @@ async def cmd_start(message: Message, state: FSMContext):
     else:
         await message.answer("Welcome back!", reply_markup=kb.main_reply_menu())
 
+# --- Direct /api command & Input Handler ---
+@router.message(Command("api"))
+async def cmd_direct_api(message: Message, state: FSMContext):
+    if not await is_allowed(message.from_user.id):
+        return
+    await state.clear()
+    args = message.text.split()
+    if len(args) >= 2:
+        api_key = args[1].strip("\"'").strip()
+        client = HeroSMSClient(api_key)
+        balance = await client.get_balance()
+        if balance is not None:
+            await db.update_api_key(message.from_user.id, api_key)
+            return await message.answer(
+                f"✅ <b>API Key Updated!</b>\n💰 Balance: <code>{balance:.4f} USD</code>",
+                reply_markup=kb.main_reply_menu(),
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            return await message.answer("❌ Invalid API Key. Please verify your key.")
+
+    await message.answer(
+        "🔑 <b>Send New API Key:</b>\n\nNiche apnar new HeroSMS API Key paste kore pathan:",
+        reply_markup=kb.api_key_cancel_menu(),
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(BotStates.waiting_for_api_key)
+
 @router.message(BotStates.waiting_for_api_key)
 async def process_api_key(message: Message, state: FSMContext):
     text = message.text.strip()
-    if text in MENU_BUTTONS:
+    if text in MENU_BUTTONS or text.lower() == "t":
         await state.clear()
-        return await message.answer("Action cancelled. Please try again.")
+        return await message.answer("Action cancelled.")
 
     api_key = text.strip("\"'").strip()
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
@@ -328,12 +427,12 @@ async def process_api_key(message: Message, state: FSMContext):
             await db.update_api_key(message.from_user.id, api_key)
             await state.clear()
             await message.answer(
-                f"✅ API Key saved successfully!\n💰 Balance: <code>{balance:.4f} USD</code>",
+                f"✅ <b>API Key Saved Successfully!</b>\n💰 Balance: <code>{balance:.4f} USD</code>",
                 reply_markup=kb.main_reply_menu(),
                 parse_mode=ParseMode.HTML
             )
         else:
-            await message.answer("❌ Invalid API Key. Please check and try again.")
+            await message.answer("❌ Invalid API Key. Please send a valid key (or send 't' to cancel):")
 
 @router.callback_query(F.data == "menu_main")
 async def cb_menu_main(callback: CallbackQuery, state: FSMContext):
@@ -346,53 +445,51 @@ async def cb_menu_main(callback: CallbackQuery, state: FSMContext):
         pass
     await callback.message.answer("Main Menu:", reply_markup=kb.main_reply_menu())
 
-# --- Quick Tools Dashboard (/t, /tools, /admin) ---
+# --- Quick Tools Dashboard (/t, /tools, /admin ebong chat-e shudhu 't' likhle) ---
 @router.message(Command("t", "tools", "admin"))
-async def open_tools_menu(message: Message):
+@router.message(F.text.casefold() == "t")
+async def open_tools_menu(message: Message, state: FSMContext):
+    await state.clear()
     if not await is_allowed(message.from_user.id): 
         return
     
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         max_p = await get_dynamic_max_price()
         op = await get_preferred_operator_str()
-        exc = await get_excluded_prefixes_str()
-        exc_count = len([x for x in exc.split(",") if x.strip()])
+        sniper_on = (await get_cached_setting("sniper_active", "0")) == "1"
+        sniper_op = await get_cached_setting("sniper_op", "claro")
         
         snapshot = (
-            f"🛠️ <b>Control Center & Tools (Page 1/2)</b>\n\n"
+            f"🛠️️ <b>Control Center & Tools (Page 1/2)</b>\n\n"
             f"📊 <b>Quick Settings Snapshot:</b>\n"
             f"• Max Price Limit: <code>${max_p:.3f}</code>\n"
             f"• Active Operator: <code>{op.upper()}</code>\n"
-            f"• Blacklisted Prefixes: <code>{exc_count} Active</code>\n\n"
+            f"• Auto Sniper: <code>{'ACTIVE (' + sniper_op.upper() + ')' if sniper_on else 'OFF'}</code>\n\n"
             f"Select any tool or action from the buttons below:"
         )
-        await message.answer(snapshot, reply_markup=kb.tools_menu_page_1(), parse_mode=ParseMode.HTML)
+        await message.answer(snapshot, reply_markup=kb.tools_menu_page_1(sniper_on, sniper_op), parse_mode=ParseMode.HTML)
 
 @router.callback_query(F.data == "tools_page_1")
-async def cb_tools_page_1(callback: CallbackQuery, state: FSMContext):
-    if state:
-        await state.clear()
+async def cb_tools_page_1(callback: CallbackQuery):
     if not await is_allowed(callback.from_user.id): 
         return
     max_p = await get_dynamic_max_price()
     op = await get_preferred_operator_str()
-    exc = await get_excluded_prefixes_str()
-    exc_count = len([x for x in exc.split(",") if x.strip()])
+    sniper_on = (await get_cached_setting("sniper_active", "0")) == "1"
+    sniper_op = await get_cached_setting("sniper_op", "claro")
     
     snapshot = (
         f"🛠️ <b>Control Center & Tools (Page 1/2)</b>\n\n"
         f"📊 <b>Quick Settings Snapshot:</b>\n"
         f"• Max Price Limit: <code>${max_p:.3f}</code>\n"
         f"• Active Operator: <code>{op.upper()}</code>\n"
-        f"• Blacklisted Prefixes: <code>{exc_count} Active</code>\n\n"
+        f"• Auto Sniper: <code>{'ACTIVE (' + sniper_op.upper() + ')' if sniper_on else 'OFF'}</code>\n\n"
         f"Select any tool or action from the buttons below:"
     )
-    await callback.message.edit_text(snapshot, reply_markup=kb.tools_menu_page_1(), parse_mode=ParseMode.HTML)
+    await callback.message.edit_text(snapshot, reply_markup=kb.tools_menu_page_1(sniper_on, sniper_op), parse_mode=ParseMode.HTML)
 
 @router.callback_query(F.data == "tools_page_2")
-async def cb_tools_page_2(callback: CallbackQuery, state: FSMContext):
-    if state:
-        await state.clear()
+async def cb_tools_page_2(callback: CallbackQuery):
     if not await is_allowed(callback.from_user.id): 
         return
     maintenance = (await get_cached_setting("maintenance", "0")) == "1"
@@ -401,16 +498,257 @@ async def cb_tools_page_2(callback: CallbackQuery, state: FSMContext):
         f"🛠️ <b>Control Center & Tools (Page 2/2)</b>\n\n"
         f"⚙️ <b>Advanced & Administrative Controls:</b>\n"
         f"• HeroSMS API Key Management\n"
-        f"• Live Account Balance & Statistics\n"
-        f"• User Approval & Revocation\n"
+        f"• Order Statistics & User Management\n"
         f"• System Maintenance & Broadcast\n\n"
         f"Select an action from below:"
     )
     await callback.message.edit_text(snapshot, reply_markup=kb.tools_menu_page_2(maintenance), parse_mode=ParseMode.HTML)
 
+# --- Sniper Toggle & Start Flow ---
+@router.callback_query(F.data == "tool_toggle_sniper")
+async def cb_tool_toggle_sniper(callback: CallbackQuery, state: FSMContext):
+    global sniper_task
+    current_status = await get_cached_setting("sniper_active", "0")
+    
+    if current_status == "1":
+        # Turn OFF
+        await db.set_setting("sniper_active", "0")
+        set_cached_setting("sniper_active", "0")
+        if sniper_task and not sniper_task.done():
+            sniper_task.cancel()
+        await callback.answer("🛑 Auto Sniper Stopped!", show_alert=True)
+        return await cb_tools_page_1(callback)
+    else:
+        # Prompt for operator name to start
+        await callback.answer()
+        await callback.message.edit_text(
+            "🎯 <b>Auto Sniper Monitor</b>\n\n"
+            "Kon operator-er stock monitor korte chan? Operator name likhun (e.g. <code>claro</code>, <code>tigo</code>, <code>movistar</code>):",
+            reply_markup=kb.back_button("tools_page_1"),
+            parse_mode=ParseMode.HTML
+        )
+        await state.set_state(BotStates.waiting_for_sniper_operator)
+
+@router.message(BotStates.waiting_for_sniper_operator)
+async def process_sniper_operator(message: Message, state: FSMContext):
+    global sniper_task
+    target_op = message.text.strip().lower()
+    if target_op in MENU_BUTTONS or target_op == "t":
+        await state.clear()
+        return await message.answer("Sniper configuration cancelled.")
+
+    await db.set_setting("sniper_active", "1")
+    set_cached_setting("sniper_active", "1")
+    await db.set_setting("sniper_op", target_op)
+    set_cached_setting("sniper_op", target_op)
+
+    if sniper_task and not sniper_task.done():
+        sniper_task.cancel()
+    sniper_task = asyncio.create_task(sniper_background_worker(target_op))
+
+    await state.clear()
+    max_p = await get_dynamic_max_price()
+    await message.answer(
+        f"🎯 <b>Auto Sniper Started!</b>\n\n"
+        f"📡 Target Operator: <b>{target_op.upper()}</b>\n"
+        f"💵 Max Price Guard: <b>${max_p:.3f}</b>\n\n"
+        f"Background-e stock khoja shuru hoyeche. Stock pawa matroi instant alert o buy button ashbe!",
+        reply_markup=kb.main_reply_menu(),
+        parse_mode=ParseMode.HTML
+    )
+
+# --- Sniper Quick Purchase Execution ---
+@router.callback_query(F.data.startswith("snipe_buy_"))
+async def cb_snipe_quick_buy(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split("_")
+    target_op = parts[2]
+    amount = int(parts[3])
+
+    user, client = await get_valid_user_client(callback.from_user.id)
+    if not user or not client:
+        return await callback.answer("API Key not found.", show_alert=True)
+
+    await callback.answer(f"Ordering {amount} {target_op.upper()} numbers...")
+    status_msg = await callback.message.answer(f"🚀 Sniper Buying {amount} {target_op.upper()} numbers... (0/{amount})")
+    
+    dynamic_max = await get_dynamic_max_price()
+    current_exc = await get_excluded_prefixes_str()
+    api_exc = current_exc if current_exc else None
+
+    purchased = []
+    batch_db_records = []
+    number_aid_map = {}
+    number_cost_map = {}
+    last_edit_time = time.time()
+    init_bal = await client.get_balance()
+    prev_balance = init_bal
+
+    for i in range(amount):
+        res = None
+        for attempt in range(3):
+            res = await client.get_number(
+                service=TG_SERVICE, 
+                country=COLOMBIA_ID, 
+                max_price=dynamic_max,
+                phone_exception=api_exc,
+                operator=target_op
+            )
+            if isinstance(res, dict) and "activationId" in res:
+                break
+            await asyncio.sleep(0.5)
+
+        if isinstance(res, dict) and "activationId" in res:
+            aid = str(res["activationId"])
+            phone = res.get("phoneNumber", "Unknown")
+            cost_val = res.get("cost")
+            
+            clean_phone = str(phone).lstrip("+").strip()
+            purchased.append(clean_phone)
+            batch_db_records.append((aid, callback.from_user.id, clean_phone))
+            
+            number_aid_map[clean_phone] = aid
+            number_aid_map[f"+{clean_phone}"] = aid
+            
+            if cost_val is not None:
+                formatted_cost = f"${float(cost_val):.3f}"
+            else:
+                curr_balance = await client.get_balance()
+                if prev_balance is not None and curr_balance is not None:
+                    delta = prev_balance - curr_balance
+                    formatted_cost = f"${delta:.3f}" if delta > 0 else f"${dynamic_max:.3f}"
+                    prev_balance = curr_balance
+                else:
+                    formatted_cost = f"${dynamic_max:.3f}"
+            
+            number_cost_map[clean_phone] = formatted_cost
+            number_cost_map[f"+{clean_phone}"] = formatted_cost
+            
+            now = time.time()
+            if (now - last_edit_time >= 3.0) or (i == amount - 1):
+                try:
+                    display_lines = purchased[-10:]
+                    lines = "\n".join(
+                        f"{n}. <b>+{p}</b> ({get_colombia_operator(p)})" 
+                        for n, p in enumerate(display_lines, len(purchased)-len(display_lines)+1)
+                    )
+                    percent = int((len(purchased) / amount) * 100)
+                    upd_text = f"🚀 Sniper Buying {amount} numbers... ({len(purchased)}/{amount}) ({percent}%)\n\n{lines}"
+                    await status_msg.edit_text(upd_text, parse_mode=ParseMode.HTML)
+                    last_edit_time = now
+                except Exception:
+                    pass
+            await asyncio.sleep(0.2)
+        else:
+            break
+
+    if purchased:
+        if hasattr(db, "save_activations_batch"):
+            await db.save_activations_batch(batch_db_records)
+        else:
+            for aid, uid, p in batch_db_records:
+                await db.save_activation(aid, uid, p)
+
+        try:
+            await status_msg.edit_text(f"✅ Purchased {len(purchased)} numbers! (100%)\n🔍 Checking Telegram registration status, please wait...")
+        except Exception:
+            pass
+
+        try:
+            check_results = await asyncio.wait_for(check_telegram_numbers(purchased), timeout=20.0)
+        except Exception:
+            check_results = {}
+
+        parsed_items = []
+        bad_numbers_to_cancel = []
+
+        for p in purchased:
+            clean_p = str(p).lstrip("+").strip()
+            op = get_colombia_operator(clean_p)
+            formatted_k = f"+{clean_p}"
+            raw_st = check_results.get(formatted_k) or check_results.get(clean_p)
+            info = format_tg_status(raw_st)
+            cost_str = number_cost_map.get(clean_p) or f"${dynamic_max:.3f}"
+            
+            item_obj = {
+                "phone": clean_p,
+                "aid": number_aid_map.get(clean_p),
+                "cost_str": cost_str,
+                "operator": op,
+                "badge": info["badge"],
+                "priority": info["priority"],
+                "is_fresh": info["is_fresh"],
+                "is_error": info.get("is_error", False)
+            }
+            parsed_items.append(item_obj)
+            if not info["is_fresh"] and not info.get("is_error") and info["priority"] in [3, 4]:
+                bad_numbers_to_cancel.append(item_obj)
+
+        fresh_list = [x for x in parsed_items if x["is_fresh"]]
+        other_list = [x for x in parsed_items if not x["is_fresh"] and not x.get("is_error")]
+        error_list = [x for x in parsed_items if x.get("is_error")]
+        other_list.sort(key=lambda x: x["priority"])
+
+        lines = [
+            f"🎉 <b>Sniper Bulk Order Completed!</b>",
+            f"Total: {len(purchased)} numbers (tap any number to copy)\n"
+        ]
+
+        if fresh_list:
+            lines.append(f"🟢 <b>Fresh Numbers ({len(fresh_list)}):</b>")
+            for idx, item in enumerate(fresh_list, 1):
+                rate_text = f" <b>{item['cost_str']}</b>"
+                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — {item['badge']}{rate_text}\n")
+
+        if other_list:
+            lines.append(f"🔻 <b>Unavailable / Occupied ({len(other_list)}):</b>")
+            for idx, item in enumerate(other_list, 1):
+                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — <b>{item['badge']}</b>")
+            lines.append("<i>(Auto-cancelling for refund in 2 mins...)</i>\n")
+
+        if error_list:
+            lines.append(f"⚠️ <b>Check Unverified ({len(error_list)}):</b>")
+            for idx, item in enumerate(error_list, 1):
+                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — <b>{item['badge']}</b>")
+            lines.append("")
+
+        lines.append("Waiting for OTPs...")
+
+        if bad_numbers_to_cancel:
+            asyncio.create_task(auto_cancel_bad_numbers(client, bad_numbers_to_cancel))
+
+        final = "\n".join(lines)
+        batch_id = str(uuid.uuid4())[:8]
+        fresh_phones = [x["phone"] for x in fresh_list]
+        fresh_batches_cache[batch_id] = {
+            "summary": final,
+            "fresh_phones": fresh_phones,
+            "created_at": time.time()
+        }
+        cleanup_expired_cache()
+
+        reply_markup = kb.bulk_result_menu(batch_id, len(fresh_list))
+        await status_msg.edit_text(final, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+    else:
+        await status_msg.edit_text("Could not purchase numbers (Stock might be depleted).")
+
+# --- Button: Check Balance (Page 1-e Shobar Prothome) ---
+@router.callback_query(F.data == "tool_balance")
+async def cb_tool_balance(callback: CallbackQuery):
+    user, client = await get_valid_user_client(callback.from_user.id)
+    if not user or not client:
+        return await callback.answer("API Key not found.", show_alert=True)
+    bal = await client.get_balance()
+    if bal is not None:
+        alert = "\n\n⚠️ <b>Warning:</b> Balance is below $0.50! Please recharge soon." if bal < 0.50 else ""
+        text = f"💰 <b>Your Current Balance:</b> <code>{bal:.4f} USD</code>{alert}"
+        await callback.message.edit_text(text, reply_markup=kb.back_button("tools_page_1"), parse_mode=ParseMode.HTML)
+    else:
+        await callback.answer("Error fetching balance.", show_alert=True)
+
 # --- View / Change API Key ---
 @router.callback_query(F.data == "tool_view_api_key")
-async def cb_tool_view_api_key(callback: CallbackQuery):
+async def cb_tool_view_api_key(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     user = await db.get_user(callback.from_user.id)
     api_k = user.get("api_key") if user else None
     
@@ -434,26 +772,20 @@ async def cb_tool_view_api_key(callback: CallbackQuery):
 @router.callback_query(F.data == "tool_change_api_key")
 async def cb_tool_change_api_key(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
+    await state.set_state(BotStates.waiting_for_api_key)
     await callback.message.edit_text(
-        "🔑 <b>Update API Key:</b>\n\nPlease send your new HeroSMS API Key:",
-        reply_markup=kb.back_button("tool_view_api_key"),
+        "🔑 <b>Update HeroSMS API Key</b>\n\n"
+        "Please send your new API Key directly in this chat:\n\n"
+        "<i>(Or click cancel below to abort)</i>",
+        reply_markup=kb.api_key_cancel_menu(),
         parse_mode=ParseMode.HTML
     )
-    await state.set_state(BotStates.waiting_for_api_key)
 
-# --- Button: Check Balance ---
-@router.callback_query(F.data == "tool_balance")
-async def cb_tool_balance(callback: CallbackQuery):
-    user, client = await get_valid_user_client(callback.from_user.id)
-    if not user or not client:
-        return await callback.answer("API Key not found.", show_alert=True)
-    bal = await client.get_balance()
-    if bal is not None:
-        alert = "\n\n⚠️ <b>Warning:</b> Balance is below $0.50! Please recharge soon." if bal < 0.50 else ""
-        text = f"💰 <b>Your Current Balance:</b> <code>{bal:.4f} USD</code>{alert}"
-        await callback.message.edit_text(text, reply_markup=kb.back_button("tools_page_2"), parse_mode=ParseMode.HTML)
-    else:
-        await callback.answer("Error fetching balance.", show_alert=True)
+@router.callback_query(F.data == "tool_cancel_api_change")
+async def cb_tool_cancel_api_change(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.answer("Cancelled", show_alert=False)
+    await cb_tool_view_api_key(callback, state)
 
 # --- Button: Set Max Price ---
 @router.callback_query(F.data == "tool_set_max_price")
@@ -466,55 +798,13 @@ async def cb_tool_set_max_price(callback: CallbackQuery, state: FSMContext):
         parse_mode=ParseMode.HTML
     )
     await state.set_state(BotStates.waiting_for_max_price)
-# --- /api Command (100% Guaranteed Working Direct Method) ---
-@router.message(Command("api"))
-async def cmd_direct_api(message: Message, state: FSMContext):
-    if not await is_allowed(message.from_user.id):
-        return
-    await state.clear()
-    args = message.text.split()
-    
-    # User jodi shorashori '/api YOUR_KEY' pathay
-    if len(args) >= 2:
-        api_key = args[1].strip("\"'").strip()
-        client = HeroSMSClient(api_key)
-        balance = await client.get_balance()
-        if balance is not None:
-            await db.update_api_key(message.from_user.id, api_key)
-            return await message.answer(
-                f"✅ <b>API Key Updated!</b>\n💰 Balance: <code>{balance:.4f} USD</code>",
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            return await message.answer("❌ Invalid API Key. Please check your key.")
 
-    # User shudhu '/api' likhle input state on hobe
-    await message.answer(
-        "🔑 <b>Send New API Key:</b>\n\nNiche apnar new HeroSMS API Key paste kore pathan:",
-        reply_markup=ReplyKeyboardRemove(),
-        parse_mode=ParseMode.HTML
-    )
-    await state.set_state(BotStates.waiting_for_api_key)
-
-
-# --- Button Fix (Callback State Fix) ---
-@router.callback_query(F.data == "tool_change_api_key")
-async def cb_tool_change_api_key(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-    await state.clear()  # Purono freeze state clear
-    await state.set_state(BotStates.waiting_for_api_key)
-    
-    await callback.message.answer(
-        "🔑 <b>Send New API Key:</b>\n\nApnar new HeroSMS API Key paste kore pathan (ba abort korte /t likhun):",
-        reply_markup=ReplyKeyboardRemove(),
-        parse_mode=ParseMode.HTML
-    )  
 @router.message(BotStates.waiting_for_max_price)
 async def process_new_max_price(message: Message, state: FSMContext):
     if not await is_allowed(message.from_user.id): 
         return
     text = message.text.strip()
-    if text in MENU_BUTTONS:
+    if text in MENU_BUTTONS or text.lower() == "t":
         await state.clear()
         return await message.answer("Action cancelled.")
     try:
@@ -627,7 +917,7 @@ async def cb_tool_set_op(callback: CallbackQuery, state: FSMContext):
 @router.message(BotStates.waiting_for_operator)
 async def process_operator_input(message: Message, state: FSMContext):
     text = message.text.strip().lower()
-    if text in MENU_BUTTONS:
+    if text in MENU_BUTTONS or text == "t":
         await state.clear()
         return await message.answer("Action cancelled.")
     await db.set_setting("preferred_operator", text)
@@ -658,7 +948,7 @@ async def cb_tool_reset_op(callback: CallbackQuery):
     await db.set_setting("preferred_operator", DEFAULT_OPERATOR)
     set_cached_setting("preferred_operator", DEFAULT_OPERATOR)
     await callback.answer(f"Operator reset to {DEFAULT_OPERATOR.upper()}!", show_alert=True)
-    return await cb_tools_page_1(callback, None)
+    return await cb_tools_page_1(callback)
 
 # --- Exclude / Blacklist Management ---
 @router.callback_query(F.data == "tool_exclude")
@@ -673,7 +963,7 @@ async def cb_tool_exclude(callback: CallbackQuery, state: FSMContext):
 @router.message(BotStates.waiting_for_exclude)
 async def process_exclude_input(message: Message, state: FSMContext):
     text = message.text.strip()
-    if text in MENU_BUTTONS:
+    if text in MENU_BUTTONS or text.lower() == "t":
         await state.clear()
         return await message.answer("Action cancelled.")
     new_items = [p.replace("+", "").strip() for p in text.split(",") if p.strip()]
@@ -700,7 +990,7 @@ async def cb_tool_unexclude(callback: CallbackQuery, state: FSMContext):
 @router.message(BotStates.waiting_for_unexclude)
 async def process_unexclude_input(message: Message, state: FSMContext):
     text = message.text.strip().replace("+", "")
-    if text in MENU_BUTTONS:
+    if text in MENU_BUTTONS or text.lower() == "t":
         await state.clear()
         return await message.answer("Action cancelled.")
     cur_str = await get_excluded_prefixes_str()
@@ -728,7 +1018,7 @@ async def cb_tool_reset_exclude(callback: CallbackQuery):
     await db.set_setting("excluded_prefixes", saved_str)
     set_cached_setting("excluded_prefixes", saved_str)
     await callback.answer("Blacklist reset to default (57350, 57351)!", show_alert=True)
-    return await cb_tools_page_1(callback, None)
+    return await cb_tools_page_1(callback)
 
 # --- Retry & Cancel Specific Number ---
 @router.callback_query(F.data == "tool_retry")
@@ -743,7 +1033,7 @@ async def cb_tool_retry(callback: CallbackQuery, state: FSMContext):
 @router.message(BotStates.waiting_for_retry)
 async def process_retry_input(message: Message, state: FSMContext):
     target = message.text.strip().replace("+", "")
-    if target in MENU_BUTTONS:
+    if target in MENU_BUTTONS or target.lower() == "t":
         await state.clear()
         return await message.answer("Action cancelled.")
     user, client = await get_valid_user_client(message.from_user.id)
@@ -769,7 +1059,7 @@ async def cb_tool_cancel_number(callback: CallbackQuery, state: FSMContext):
 @router.message(BotStates.waiting_for_cancel)
 async def process_cancel_input(message: Message, state: FSMContext):
     target = message.text.strip().replace("+", "")
-    if target in MENU_BUTTONS:
+    if target in MENU_BUTTONS or target.lower() == "t":
         await state.clear()
         return await message.answer("Action cancelled.")
     user, client = await get_valid_user_client(message.from_user.id)
@@ -797,7 +1087,7 @@ async def process_add_user_id(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: 
         return
     text = message.text.strip()
-    if text in MENU_BUTTONS:
+    if text in MENU_BUTTONS or text.lower() == "t":
         await state.clear()
         return await message.answer("Action cancelled.")
     try:
@@ -848,7 +1138,7 @@ async def process_revoke_user_id(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: 
         return
     text = message.text.strip()
-    if text in MENU_BUTTONS:
+    if text in MENU_BUTTONS or text.lower() == "t":
         await state.clear()
         return await message.answer("Action cancelled.")
     try:
@@ -861,7 +1151,7 @@ async def process_revoke_user_id(message: Message, state: FSMContext):
 
 @router.message(Command("d"))
 async def cmd_quick_revoke_user(message: Message):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id != ADMIN_ID: 
         return
     args = message.text.split()
     if len(args) < 2 or not args[1].isdigit():
@@ -911,7 +1201,7 @@ async def btn_finish_activations(message: Message):
         summary = f"<b>✅ Finished Activations ({len(finished_lines)}):</b>\n\n" + "\n".join(finished_lines)
         await message.answer(summary, parse_mode=ParseMode.HTML)
 
-# --- Bulk Buy Engine (20s Checker Timeout + Cost Delta) ---
+# --- Bulk Buy Numbers ---
 @router.message(F.text == "Bulk Buy Numbers")
 async def text_bulk_buy(message: Message, state: FSMContext):
     if not await is_allowed(message.from_user.id): 
@@ -925,7 +1215,7 @@ async def text_bulk_buy(message: Message, state: FSMContext):
 @router.message(BotStates.waiting_for_bulk_amount)
 async def process_bulk_amount(message: Message, state: FSMContext):
     text = message.text.strip()
-    if text in MENU_BUTTONS:
+    if text in MENU_BUTTONS or text.lower() == "t":
         await state.clear()
         return await message.answer("Bulk buy cancelled.")
 
@@ -1016,7 +1306,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
                         upd_text += f"\n...and {len(purchased)-10} earlier"
                     await status_msg.edit_text(upd_text, parse_mode=ParseMode.HTML)
                     last_edit_time = now
-                except (TelegramRetryAfter, TelegramBadRequest, Exception):
+                except Exception:
                     pass
             
             await asyncio.sleep(0.3)
@@ -1037,7 +1327,6 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         except Exception:
             pass
 
-        # 20-Second Safe Timeout for Telegram Checker
         try:
             check_results = await asyncio.wait_for(check_telegram_numbers(purchased), timeout=20.0)
         except Exception as e:
@@ -1115,16 +1404,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         cleanup_expired_cache()
 
         reply_markup = kb.bulk_result_menu(batch_id, len(fresh_list))
-
-        if len(final) > 4000:
-            for part in [final[j:j+4000] for j in range(0, len(final), 4000)]:
-                await message.answer(part, parse_mode=ParseMode.HTML)
-            try: 
-                await status_msg.delete()
-            except Exception: 
-                pass
-        else:
-            await status_msg.edit_text(final, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+        await status_msg.edit_text(final, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
     else:
         await status_msg.edit_text("Could not purchase any numbers.")
 
@@ -1266,7 +1546,7 @@ async def cb_admin_maintenance(callback: CallbackQuery):
     await db.set_setting("maintenance", new_val)
     set_cached_setting("maintenance", new_val)
     await callback.answer(f"Maintenance Mode: {'ENABLED' if new_val == '1' else 'DISABLED'}", show_alert=True)
-    return await cb_tools_page_2(callback, None)
+    return await cb_tools_page_2(callback)
 
 @router.callback_query(F.data == "admin_broadcast")
 async def cb_admin_broadcast(callback: CallbackQuery, state: FSMContext):
@@ -1279,7 +1559,7 @@ async def cb_admin_broadcast(callback: CallbackQuery, state: FSMContext):
 async def process_broadcast(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID: 
         return
-    if message.text.strip() in MENU_BUTTONS:
+    if message.text.strip() in MENU_BUTTONS or message.text.strip().lower() == "t":
         await state.clear()
         return await message.answer("Broadcast cancelled.")
 
