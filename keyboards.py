@@ -87,60 +87,41 @@ def api_key_view_menu() -> InlineKeyboardMarkup:
     b.adjust(1)
     return b.as_markup()
 
-def tools_menu_page_1() -> InlineKeyboardMarkup:
-    """Page 1: Operators, Exclude/Blacklist and Pricing in ONE Page (Full text visible)"""
+def api_key_cancel_menu() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
-    
-    # Numbers & Price
+    b.button(text="❌ Cancel", callback_data="tool_cancel_api_change")
+    b.adjust(1)
+    return b.as_markup()
+
+def tools_menu_page_1() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
     b.button(text="📱 Active Numbers", callback_data="tool_active_numbers")
     b.button(text="💵 Set Max Price", callback_data="tool_set_max_price")
-    
-    # Operator Settings
     b.button(text="📡 Set Operator", callback_data="tool_set_operator")
     b.button(text="📋 Operator List", callback_data="tool_operator_list")
-    
-    # Exclude / Blacklist Settings (Sob Ek Page-e)
     b.button(text="➕ Exclude Prefix", callback_data="tool_exclude")
     b.button(text="➖ Unexclude Prefix", callback_data="tool_unexclude")
-    
     b.button(text="📜 Exclude List", callback_data="tool_exclude_list")
     b.button(text="🔄 Reset Exclude", callback_data="tool_reset_exclude")
-    
-    # Reset Operator & Retry
     b.button(text="🔄 Reset Operator", callback_data="tool_reset_operator")
     b.button(text="🔁 Retry Number", callback_data="tool_retry")
-    
-    # Navigation
     b.button(text="➡️ Next Page", callback_data="tools_page_2")
     b.button(text="🔙 Back to Main Menu", callback_data="menu_main")
-    
     b.adjust(2, 2, 2, 2, 2, 2)
     return b.as_markup()
 
 def tools_menu_page_2(maintenance: bool) -> InlineKeyboardMarkup:
-    """Page 2: API Key, Balances, Admin & System Controls"""
     maint_status = "ON" if maintenance else "OFF"
     b = InlineKeyboardBuilder()
-    
-    # API Key & Balance
     b.button(text="🔑 View / Change API Key", callback_data="tool_view_api_key")
     b.button(text="💰 Check Balance", callback_data="tool_balance")
-    
-    # Stats & Single Cancel
     b.button(text="📊 HeroSMS Stats", callback_data="tool_stats")
     b.button(text="❌ Cancel Number", callback_data="tool_cancel_number")
-    
-    # Access Controls
     b.button(text="👥 Add User", callback_data="tool_add_user")
     b.button(text="❌ Revoke User", callback_data="tool_revoke_user")
-    
-    # Admin Controls
     b.button(text="🚫 Ban / Unban User", callback_data="admin_ban")
     b.button(text="📢 Broadcast Message", callback_data="admin_broadcast")
-    
-    # System & Navigation
-    b.button(text=f"⚙️ Maintenance: {maint_status}", callback_data="admin_maintenance")
+    b.button(text=f"⚙️️ Maintenance: {maint_status}", callback_data="admin_maintenance")
     b.button(text="⬅️ Previous Page", callback_data="tools_page_1")
-    
     b.adjust(2, 2, 2, 2, 2)
     return b.as_markup()
