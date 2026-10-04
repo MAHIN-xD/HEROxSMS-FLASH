@@ -5,8 +5,7 @@ def main_reply_menu() -> ReplyKeyboardMarkup:
     b = ReplyKeyboardBuilder()
     b.button(text="Bulk Buy Numbers")
     b.button(text="Finish")
-    b.button(text="🛠 Tools")
-    b.adjust(2, 1)
+    b.adjust(2)
     return b.as_markup(resize_keyboard=True)
 
 def back_button(callback_data: str = "tools_main") -> InlineKeyboardMarkup:
