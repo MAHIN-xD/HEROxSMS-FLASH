@@ -90,75 +90,89 @@ async def start_periodic_janitor():
         except Exception as e:
             logging.error(f"Janitor error: {e}")
 
-# --- Background Auto Sniper Engine ---
+# --- Continuous Aggressive Direct Buy Sniper Worker ---
 async def sniper_background_worker(target_operator: str):
     bot = get_bot_instance()
-    last_alert_time = 0
     while True:
         try:
+            # User manual stop korle loop tham-be
             is_active = (await get_cached_setting("sniper_active", "0")) == "1"
             if not is_active:
                 break
 
             admin_user = await db.get_user(ADMIN_ID)
-            if admin_user and admin_user.get("api_key"):
-                client = HeroSMSClient(admin_user["api_key"])
-                max_price_limit = await get_dynamic_max_price()
+            if not admin_user or not admin_user.get("api_key"):
+                break
 
-                raw_res = await client.get_prices(country=COLOMBIA_ID, service=TG_SERVICE)
-                c_dict = {}
-                if isinstance(raw_res, dict):
-                    if "33" in raw_res:
-                        c_dict = raw_res["33"].get("tg", raw_res["33"])
-                    elif 33 in raw_res:
-                        c_dict = raw_res[33].get("tg", raw_res[33])
-                    elif "tg" in raw_res:
-                        c_dict = raw_res["tg"].get("33", raw_res["tg"])
+            client = HeroSMSClient(admin_user["api_key"])
+            dynamic_max = await get_dynamic_max_price()
+            current_exc = await get_excluded_prefixes_str()
+            api_exc = current_exc if current_exc else None
+
+            init_bal = await client.get_balance()
+
+            # Continuous direct buy attempt (NO_NUMBERS ashleo loop tham-be na!)
+            res = await client.get_number(
+                service=TG_SERVICE,
+                country=COLOMBIA_ID,
+                max_price=dynamic_max,
+                phone_exception=api_exc,
+                operator=target_operator
+            )
+
+            # Ekta number successfully buy hoye geche!
+            if isinstance(res, dict) and "activationId" in res:
+                aid = str(res["activationId"])
+                phone = res.get("phoneNumber", "Unknown")
+                cost_val = res.get("cost")
+                clean_phone = str(phone).lstrip("+").strip()
+
+                # 1. 1-ta kina hoye geche, tai sniper auto-pause
+                await db.set_setting("sniper_active", "0")
+                set_cached_setting("sniper_active", "0")
+
+                # 2. Database-e save for webhook OTP
+                await db.save_activation(aid, ADMIN_ID, clean_phone)
+
+                # 3. Cost calculation
+                if cost_val is not None:
+                    rate_str = f"${float(cost_val):.3f}"
+                else:
+                    curr_bal = await client.get_balance()
+                    if init_bal is not None and curr_bal is not None and (init_bal - curr_bal) > 0:
+                        rate_str = f"${(init_bal - curr_bal):.3f}"
                     else:
-                        for k, v in raw_res.items():
-                            if str(k) == "33" and isinstance(v, dict):
-                                c_dict = v.get("tg", v)
-                                break
+                        rate_str = f"${dynamic_max:.3f}"
 
-                found_cnt = 0
-                found_cost = 0.0
+                # 4. Instant Alert to Admin
+                if bot:
+                    success_msg = (
+                        f"🎯 <b>SNIPER SUCCESS! 1-TI NUMBER KINA HOYECHE!</b>\n\n"
+                        f"📡 Operator: <b>{target_operator.upper()}</b>\n"
+                        f"🇨🇴 <b>Telegram:</b> <code>+{clean_phone}</code>\n"
+                        f"💵 Rate: <b>{rate_str}</b>\n\n"
+                        f"🛑 <i>Sniper thamiye dewa hoyeche। OTP ashle niche auto show korbe।</i>"
+                    )
+                    try:
+                        await bot.send_message(
+                            ADMIN_ID,
+                            success_msg,
+                            reply_markup=kb.number_action_menu(aid),
+                            parse_mode=ParseMode.HTML
+                        )
+                    except Exception:
+                        pass
+                break  # 1-ti kina done, loop stop!
 
-                if isinstance(c_dict, dict):
-                    for op_key, op_info in c_dict.items():
-                        if str(op_key).lower() == target_operator.lower():
-                            if isinstance(op_info, dict):
-                                found_cnt = int(op_info.get("count") or op_info.get("amount") or op_info.get("qty") or 0)
-                                found_cost = float(op_info.get("cost") or op_info.get("price") or op_info.get("rate") or 0.0)
-                            elif isinstance(op_info, (int, str)) and str(op_info).isdigit():
-                                found_cnt = int(op_info)
-                            break
+            # NO_NUMBERS ashuk ba kono error ashuk, continuous try choltei thakbe
+            elif isinstance(res, str) and "429" in res:
+                await asyncio.sleep(8)
 
-                now = time.time()
-                # Stock paowa gele ebong rate Max Price er niche hole alert pathabe
-                if found_cnt > 0 and (found_cost <= max_price_limit or found_cost == 0.0):
-                    if now - last_alert_time > 30:  # Har 30 second-e 1 bar alert spam prevent
-                        if bot:
-                            rate_text = f"${found_cost:.3f}" if found_cost > 0 else "Market Rate"
-                            alert_text = (
-                                f"🎯 <b>SNIPER FOUND STOCK!</b>\n\n"
-                                f"📡 Operator: <b>{target_operator.upper()}</b>\n"
-                                f"💵 Live Rate: <b>{rate_text}</b> (Max: ${max_price_limit:.3f})\n"
-                                f"📦 Available Stock: <b>{found_cnt} numbers</b>\n\n"
-                                f"Kotogula number kinte chan? Niche click korun:"
-                            )
-                            try:
-                                await bot.send_message(
-                                    ADMIN_ID,
-                                    alert_text,
-                                    reply_markup=kb.sniper_alert_menu(target_operator),
-                                    parse_mode=ParseMode.HTML
-                                )
-                                last_alert_time = now
-                            except Exception:
-                                pass
         except Exception as e:
-            logging.error(f"Sniper worker error: {e}")
-        await asyncio.sleep(4)
+            logging.error(f"Sniper hunting error: {e}")
+
+        # Safe continuous interval (HeroSMS IP firewall safe rakhbe)
+        await asyncio.sleep(3.2)
 
 async def auto_cancel_bad_numbers(client: HeroSMSClient, bad_items: list):
     if not bad_items:
@@ -460,7 +474,7 @@ async def open_tools_menu(message: Message, state: FSMContext):
         sniper_op = await get_cached_setting("sniper_op", "claro")
         
         snapshot = (
-            f"🛠️️ <b>Control Center & Tools (Page 1/2)</b>\n\n"
+            f"🛠️ <b>Control Center & Tools (Page 1/2)</b>\n\n"
             f"📊 <b>Quick Settings Snapshot:</b>\n"
             f"• Max Price Limit: <code>${max_p:.3f}</code>\n"
             f"• Active Operator: <code>{op.upper()}</code>\n"
@@ -511,7 +525,7 @@ async def cb_tool_toggle_sniper(callback: CallbackQuery, state: FSMContext):
     current_status = await get_cached_setting("sniper_active", "0")
     
     if current_status == "1":
-        # Turn OFF
+        # Manual Turn OFF
         await db.set_setting("sniper_active", "0")
         set_cached_setting("sniper_active", "0")
         if sniper_task and not sniper_task.done():
@@ -519,11 +533,11 @@ async def cb_tool_toggle_sniper(callback: CallbackQuery, state: FSMContext):
         await callback.answer("🛑 Auto Sniper Stopped!", show_alert=True)
         return await cb_tools_page_1(callback)
     else:
-        # Prompt for operator name to start
+        # Prompt for operator name to start continuous loop
         await callback.answer()
         await callback.message.edit_text(
-            "🎯 <b>Auto Sniper Monitor</b>\n\n"
-            "Kon operator-er stock monitor korte chan? Operator name likhun (e.g. <code>claro</code>, <code>tigo</code>, <code>movistar</code>):",
+            "🎯 <b>Auto Sniper Direct Grabber</b>\n\n"
+            "Kon operator-er number continuous try korte chan? Operator name likhun (e.g. <code>claro</code>, <code>tigo</code>, <code>movistar</code>):",
             reply_markup=kb.back_button("tools_page_1"),
             parse_mode=ParseMode.HTML
         )
@@ -533,7 +547,7 @@ async def cb_tool_toggle_sniper(callback: CallbackQuery, state: FSMContext):
 async def process_sniper_operator(message: Message, state: FSMContext):
     global sniper_task
     target_op = message.text.strip().lower()
-    if target_op in MENU_BUTTONS or target_op == "t":
+    if target_op in MENU_BUTTONS or target_op.lower() == "t":
         await state.clear()
         return await message.answer("Sniper configuration cancelled.")
 
@@ -551,185 +565,11 @@ async def process_sniper_operator(message: Message, state: FSMContext):
     await message.answer(
         f"🎯 <b>Auto Sniper Started!</b>\n\n"
         f"📡 Target Operator: <b>{target_op.upper()}</b>\n"
-        f"💵 Max Price Guard: <b>${max_p:.3f}</b>\n\n"
-        f"Background-e stock khoja shuru hoyeche. Stock pawa matroi instant alert o buy button ashbe!",
+        f"💵 Max Price Limit: <b>${max_p:.3f}</b>\n\n"
+        f"<i>Bot continuous try kortei thakbe number na pawa porjonto। Ekta number kina matroi thamiye apnake alert dibe!</i>",
         reply_markup=kb.main_reply_menu(),
         parse_mode=ParseMode.HTML
     )
-
-# --- Sniper Quick Purchase Execution ---
-@router.callback_query(F.data.startswith("snipe_buy_"))
-async def cb_snipe_quick_buy(callback: CallbackQuery, state: FSMContext):
-    parts = callback.data.split("_")
-    target_op = parts[2]
-    amount = int(parts[3])
-
-    user, client = await get_valid_user_client(callback.from_user.id)
-    if not user or not client:
-        return await callback.answer("API Key not found.", show_alert=True)
-
-    await callback.answer(f"Ordering {amount} {target_op.upper()} numbers...")
-    status_msg = await callback.message.answer(f"🚀 Sniper Buying {amount} {target_op.upper()} numbers... (0/{amount})")
-    
-    dynamic_max = await get_dynamic_max_price()
-    current_exc = await get_excluded_prefixes_str()
-    api_exc = current_exc if current_exc else None
-
-    purchased = []
-    batch_db_records = []
-    number_aid_map = {}
-    number_cost_map = {}
-    last_edit_time = time.time()
-    init_bal = await client.get_balance()
-    prev_balance = init_bal
-
-    for i in range(amount):
-        res = None
-        for attempt in range(3):
-            res = await client.get_number(
-                service=TG_SERVICE, 
-                country=COLOMBIA_ID, 
-                max_price=dynamic_max,
-                phone_exception=api_exc,
-                operator=target_op
-            )
-            if isinstance(res, dict) and "activationId" in res:
-                break
-            await asyncio.sleep(0.5)
-
-        if isinstance(res, dict) and "activationId" in res:
-            aid = str(res["activationId"])
-            phone = res.get("phoneNumber", "Unknown")
-            cost_val = res.get("cost")
-            
-            clean_phone = str(phone).lstrip("+").strip()
-            purchased.append(clean_phone)
-            batch_db_records.append((aid, callback.from_user.id, clean_phone))
-            
-            number_aid_map[clean_phone] = aid
-            number_aid_map[f"+{clean_phone}"] = aid
-            
-            if cost_val is not None:
-                formatted_cost = f"${float(cost_val):.3f}"
-            else:
-                curr_balance = await client.get_balance()
-                if prev_balance is not None and curr_balance is not None:
-                    delta = prev_balance - curr_balance
-                    formatted_cost = f"${delta:.3f}" if delta > 0 else f"${dynamic_max:.3f}"
-                    prev_balance = curr_balance
-                else:
-                    formatted_cost = f"${dynamic_max:.3f}"
-            
-            number_cost_map[clean_phone] = formatted_cost
-            number_cost_map[f"+{clean_phone}"] = formatted_cost
-            
-            now = time.time()
-            if (now - last_edit_time >= 3.0) or (i == amount - 1):
-                try:
-                    display_lines = purchased[-10:]
-                    lines = "\n".join(
-                        f"{n}. <b>+{p}</b> ({get_colombia_operator(p)})" 
-                        for n, p in enumerate(display_lines, len(purchased)-len(display_lines)+1)
-                    )
-                    percent = int((len(purchased) / amount) * 100)
-                    upd_text = f"🚀 Sniper Buying {amount} numbers... ({len(purchased)}/{amount}) ({percent}%)\n\n{lines}"
-                    await status_msg.edit_text(upd_text, parse_mode=ParseMode.HTML)
-                    last_edit_time = now
-                except Exception:
-                    pass
-            await asyncio.sleep(0.2)
-        else:
-            break
-
-    if purchased:
-        if hasattr(db, "save_activations_batch"):
-            await db.save_activations_batch(batch_db_records)
-        else:
-            for aid, uid, p in batch_db_records:
-                await db.save_activation(aid, uid, p)
-
-        try:
-            await status_msg.edit_text(f"✅ Purchased {len(purchased)} numbers! (100%)\n🔍 Checking Telegram registration status, please wait...")
-        except Exception:
-            pass
-
-        try:
-            check_results = await asyncio.wait_for(check_telegram_numbers(purchased), timeout=20.0)
-        except Exception:
-            check_results = {}
-
-        parsed_items = []
-        bad_numbers_to_cancel = []
-
-        for p in purchased:
-            clean_p = str(p).lstrip("+").strip()
-            op = get_colombia_operator(clean_p)
-            formatted_k = f"+{clean_p}"
-            raw_st = check_results.get(formatted_k) or check_results.get(clean_p)
-            info = format_tg_status(raw_st)
-            cost_str = number_cost_map.get(clean_p) or f"${dynamic_max:.3f}"
-            
-            item_obj = {
-                "phone": clean_p,
-                "aid": number_aid_map.get(clean_p),
-                "cost_str": cost_str,
-                "operator": op,
-                "badge": info["badge"],
-                "priority": info["priority"],
-                "is_fresh": info["is_fresh"],
-                "is_error": info.get("is_error", False)
-            }
-            parsed_items.append(item_obj)
-            if not info["is_fresh"] and not info.get("is_error") and info["priority"] in [3, 4]:
-                bad_numbers_to_cancel.append(item_obj)
-
-        fresh_list = [x for x in parsed_items if x["is_fresh"]]
-        other_list = [x for x in parsed_items if not x["is_fresh"] and not x.get("is_error")]
-        error_list = [x for x in parsed_items if x.get("is_error")]
-        other_list.sort(key=lambda x: x["priority"])
-
-        lines = [
-            f"🎉 <b>Sniper Bulk Order Completed!</b>",
-            f"Total: {len(purchased)} numbers (tap any number to copy)\n"
-        ]
-
-        if fresh_list:
-            lines.append(f"🟢 <b>Fresh Numbers ({len(fresh_list)}):</b>")
-            for idx, item in enumerate(fresh_list, 1):
-                rate_text = f" <b>{item['cost_str']}</b>"
-                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — {item['badge']}{rate_text}\n")
-
-        if other_list:
-            lines.append(f"🔻 <b>Unavailable / Occupied ({len(other_list)}):</b>")
-            for idx, item in enumerate(other_list, 1):
-                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — <b>{item['badge']}</b>")
-            lines.append("<i>(Auto-cancelling for refund in 2 mins...)</i>\n")
-
-        if error_list:
-            lines.append(f"⚠️ <b>Check Unverified ({len(error_list)}):</b>")
-            for idx, item in enumerate(error_list, 1):
-                lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — <b>{item['badge']}</b>")
-            lines.append("")
-
-        lines.append("Waiting for OTPs...")
-
-        if bad_numbers_to_cancel:
-            asyncio.create_task(auto_cancel_bad_numbers(client, bad_numbers_to_cancel))
-
-        final = "\n".join(lines)
-        batch_id = str(uuid.uuid4())[:8]
-        fresh_phones = [x["phone"] for x in fresh_list]
-        fresh_batches_cache[batch_id] = {
-            "summary": final,
-            "fresh_phones": fresh_phones,
-            "created_at": time.time()
-        }
-        cleanup_expired_cache()
-
-        reply_markup = kb.bulk_result_menu(batch_id, len(fresh_list))
-        await status_msg.edit_text(final, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
-    else:
-        await status_msg.edit_text("Could not purchase numbers (Stock might be depleted).")
 
 # --- Button: Check Balance (Page 1-e Shobar Prothome) ---
 @router.callback_query(F.data == "tool_balance")
@@ -1151,7 +991,7 @@ async def process_revoke_user_id(message: Message, state: FSMContext):
 
 @router.message(Command("d"))
 async def cmd_quick_revoke_user(message: Message):
-    if message.from_user.id != ADMIN_ID: 
+    if message.from_user.id != ADMIN_ID:
         return
     args = message.text.split()
     if len(args) < 2 or not args[1].isdigit():
@@ -1179,7 +1019,7 @@ async def btn_finish_activations(message: Message):
         to_finish = [act for act in activations if bool(act.get("smsCode")) or str(act.get("activationStatus")) in ["4", "6"]]
 
         if not to_finish:
-            return await message.answer("ℹ️ No completed activations found with SMS to finish.")
+            return await message.answer("ℹ️️ No completed activations found with SMS to finish.")
 
         finished_lines = []
         for act in to_finish:
@@ -1194,7 +1034,7 @@ async def btn_finish_activations(message: Message):
                             del processed_otps[k]
                     finished_lines.append(f"• <b>+{phone}</b> - Finished ✅")
                 else:
-                    finished_lines.append(f"• <b>+{phone}</b> - ⚠️ Failed")
+                    finished_lines.append(f"• <b>+{phone}</b> - ⚠️️ Failed")
             except Exception as e:
                 finished_lines.append(f"• <b>+{phone}</b> - Error: {e}")
 
@@ -1329,8 +1169,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 
         try:
             check_results = await asyncio.wait_for(check_telegram_numbers(purchased), timeout=20.0)
-        except Exception as e:
-            logging.warning(f"Telegram checker timeout: {e}")
+        except Exception:
             check_results = {}
 
         parsed_items = []
