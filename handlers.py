@@ -466,7 +466,49 @@ async def cb_tool_set_max_price(callback: CallbackQuery, state: FSMContext):
         parse_mode=ParseMode.HTML
     )
     await state.set_state(BotStates.waiting_for_max_price)
+# --- /api Command (100% Guaranteed Working Direct Method) ---
+@router.message(Command("api"))
+async def cmd_direct_api(message: Message, state: FSMContext):
+    if not await is_allowed(message.from_user.id):
+        return
+    await state.clear()
+    args = message.text.split()
+    
+    # User jodi shorashori '/api YOUR_KEY' pathay
+    if len(args) >= 2:
+        api_key = args[1].strip("\"'").strip()
+        client = HeroSMSClient(api_key)
+        balance = await client.get_balance()
+        if balance is not None:
+            await db.update_api_key(message.from_user.id, api_key)
+            return await message.answer(
+                f"✅ <b>API Key Updated!</b>\n💰 Balance: <code>{balance:.4f} USD</code>",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            return await message.answer("❌ Invalid API Key. Please check your key.")
 
+    # User shudhu '/api' likhle input state on hobe
+    await message.answer(
+        "🔑 <b>Send New API Key:</b>\n\nNiche apnar new HeroSMS API Key paste kore pathan:",
+        reply_markup=ReplyKeyboardRemove(),
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(BotStates.waiting_for_api_key)
+
+
+# --- Button Fix (Callback State Fix) ---
+@router.callback_query(F.data == "tool_change_api_key")
+async def cb_tool_change_api_key(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.clear()  # Purono freeze state clear
+    await state.set_state(BotStates.waiting_for_api_key)
+    
+    await callback.message.answer(
+        "🔑 <b>Send New API Key:</b>\n\nApnar new HeroSMS API Key paste kore pathan (ba abort korte /t likhun):",
+        reply_markup=ReplyKeyboardRemove(),
+        parse_mode=ParseMode.HTML
+    )  
 @router.message(BotStates.waiting_for_max_price)
 async def process_new_max_price(message: Message, state: FSMContext):
     if not await is_allowed(message.from_user.id): 
