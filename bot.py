@@ -24,13 +24,12 @@ async def on_startup(bot: Bot):
     await db.init_db()
     asyncio.create_task(start_periodic_janitor())
     
-    # Shudhu start ebong t command suggestion hishebe thakbe
+   # Shudhu start command suggestion hishebe thakbe
     commands = [
-        BotCommand(command="start", description="Start or Restart Bot"),
-        BotCommand(command="t", description="Open Control Tools Dashboard")
+        BotCommand(command="start", description="Start or Restart Bot")
     ]
     await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
-    logging.info("Telegram command suggestions registered (start & t).")
+    logging.info("Telegram command suggestions registered (start only).")
 
     if WEBHOOK_URL:
         webhook_path = f"{WEBHOOK_URL}/webhook/telegram"
