@@ -20,9 +20,17 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 api_key TEXT,
-                is_banned INTEGER DEFAULT 0
+                is_banned INTEGER DEFAULT 0,
+                is_approved INTEGER DEFAULT 0
             )
         """)
+        
+        # Existing database-e safe column migration
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN is_approved INTEGER DEFAULT 0")
+        except Exception:
+            pass
+
         await db.execute("""
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -64,6 +72,14 @@ async def update_api_key(user_id: int, api_key: str):
 async def set_ban_status(user_id: int, is_banned: bool):
     async with get_db() as db:
         await db.execute("UPDATE users SET is_banned = ? WHERE user_id = ?", (1 if is_banned else 0, user_id))
+        await db.commit()
+
+async def set_approval_status(user_id: int, is_approved: bool):
+    async with get_db() as db:
+        await db.execute(
+            "INSERT INTO users (user_id, is_approved) VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET is_approved = ?",
+            (user_id, 1 if is_approved else 0, 1 if is_approved else 0)
+        )
         await db.commit()
 
 async def get_setting(key: str):
