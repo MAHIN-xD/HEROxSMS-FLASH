@@ -89,7 +89,7 @@ async def start_periodic_janitor():
         except Exception as e:
             logging.error(f"Janitor error: {e}")
 
-# --- Bulk Style Continuous Live Sniper Grabber (Single Line Live Update) ---
+# --- Real Live Sniper Grabber with Telegram Freshness Verification ---
 async def start_live_sniper_process(message: Message, target_op: str):
     user, client = await get_valid_user_client(message.from_user.id)
     if not user or not client:
@@ -137,11 +137,13 @@ async def start_live_sniper_process(message: Message, target_op: str):
             cost_val = res.get("cost")
             clean_phone = str(phone).lstrip("+").strip()
 
+            # Sniper loop instant auto-pause
             await db.set_setting("sniper_active", "0")
             set_cached_setting("sniper_active", "0")
 
             await db.save_activation(aid, message.from_user.id, clean_phone)
 
+            # Accurate rate calculation
             if cost_val is not None:
                 rate_str = f"${float(cost_val):.3f}"
             else:
@@ -153,13 +155,44 @@ async def start_live_sniper_process(message: Message, target_op: str):
 
             op_detected = get_colombia_operator(clean_phone)
 
+            # Status: Checking Telegram Freshness
+            try:
+                await status_msg.edit_text(
+                    f"🎯 <b>Number Grabbed!</b>\n"
+                    f"🇨🇴 <code>+{clean_phone}</code> ({op_detected.upper()})\n\n"
+                    f"🔍 Checking Telegram status, please wait...",
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception:
+                pass
+
+            # 2. Telegram Registration Check (20s safe timeout)
+            try:
+                check_results = await asyncio.wait_for(check_telegram_numbers([clean_phone]), timeout=20.0)
+            except Exception:
+                check_results = {}
+
+            formatted_k = f"+{clean_phone}"
+            raw_st = check_results.get(formatted_k) or check_results.get(clean_phone)
+            tg_info = format_tg_status(raw_st)
+
+            # 3. Final Result formatting
+            if tg_info["is_fresh"]:
+                verdict_text = "🟢 <b>FRESH NUMBER!</b> Waiting for OTP..."
+            else:
+                verdict_text = f"🔻 <b>{tg_info['badge']}</b> (<i>Auto-cancelling for refund in 2 mins...</i>)"
+                bad_item = [{"aid": aid, "phone": clean_phone}]
+                asyncio.create_task(auto_cancel_bad_numbers(client, bad_item))
+
             final_text = (
-                f"🎉 <b>SNIPER SUCCESS! 1-TI NUMBER KINA HOYECHE!</b>\n\n"
+                f"🎉 <b>SNIPER RESULT</b>\n\n"
                 f"📡 Operator: <b>{op_detected.upper()}</b>\n"
-                f"🇨🇴 <b>Telegram:</b> <code>+{clean_phone}</code>\n"
-                f"💵 Rate: <b>{rate_str}</b>\n\n"
-                f"🛑 <i>Sniper finished! Waiting for OTP...</i>"
+                f"🇨🇴 Telegram: <code>+{clean_phone}</code>\n"
+                f"💵 Rate: <b>{rate_str}</b>\n"
+                f"🔍 Status: <b>{tg_info['badge']}</b>\n\n"
+                f"{verdict_text}"
             )
+
             try:
                 await status_msg.edit_text(
                     final_text,
@@ -173,7 +206,7 @@ async def start_live_sniper_process(message: Message, target_op: str):
         elif isinstance(res, str) and "429" in res:
             await asyncio.sleep(6)
 
-        # Single Line Attempt UI Update (Telegram Flood-Safe)
+        # Live Attempt UI Update (Single Line)
         now = time.time()
         if now - last_ui_edit >= 2.0:
             try:
@@ -257,15 +290,15 @@ def format_tg_status(raw_status: any) -> dict:
 
     locked_signals = ["flood", "locked", "lock", "wait", "restricted", "2fa", "password", "has_password"]
     if any(w in st for w in locked_signals):
-        return {"badge": "🔒 Locked", "priority": 2, "is_fresh": False, "is_error": False}
+        return {"badge": "🔒", "priority": 2, "is_fresh": False, "is_error": False}
 
     occupied_signals = ["occupied", "registered", "taken", "used", "true", "1"]
     if any(w in st for w in occupied_signals) and not any(neg in st for neg in ["not", "un", "no", "non", "false"]):
-        return {"badge": "❌ Registered", "priority": 3, "is_fresh": False, "is_error": False}
+        return {"badge": "❌", "priority": 3, "is_fresh": False, "is_error": False}
 
     banned_signals = ["banned", "ban", "blocked"]
     if any(w in st for w in banned_signals) and not any(neg in st for neg in ["not", "un", "no", "non", "without", "false"]):
-        return {"badge": "🚫 Banned", "priority": 4, "is_fresh": False, "is_error": False}
+        return {"badge": "🚫", "priority": 4, "is_fresh": False, "is_error": False}
 
     clean = clean_error_text(st)
     return {"badge": f"⚠ {clean}", "priority": 5, "is_fresh": False, "is_error": False}
