@@ -6,10 +6,15 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiogram.types import BotCommand, BotCommandScopeDefault
 
 import database as db
-from handlers import router, handle_herosms_webhook, set_bot_instance, start_periodic_janitor
+from handlers import (
+    router, 
+    handle_herosms_webhook, 
+    set_bot_instance, 
+    start_periodic_janitor, 
+    start_restock_monitor
+)
 
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", 8080))
@@ -18,21 +23,11 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL", "").rstrip("/")
 async def on_startup(bot: Bot):
     await db.init_db()
     asyncio.create_task(start_periodic_janitor())
+    asyncio.create_task(start_restock_monitor())
     
-    commands = [
-        BotCommand(command="start", description="বট শুরু করুন অথবা প্রধান মেনু দেখুন"),
-        BotCommand(command="balance", description="বর্তমান HeroSMS ব্যালেন্স চেক করুন"),
-        BotCommand(command="ok", description="ওটিপি আসা সম্পন্ন নম্বরগুলো ফিনিশ করুন"),
-        BotCommand(command="stats", description="আজকের সাকসেস রেট ও পরিসংখ্যান"),
-        BotCommand(command="exclude", description="প্রিফিক্স ব্লকলিস্টে যোগ করুন (/exclude 57300)"),
-        BotCommand(command="unexclude", description="প্রিফিক্স ব্লকলিস্ট থেকে সরান (/unexclude 57350)"),
-        BotCommand(command="exclude_list", description="বাদ থাকা প্রিফিক্স তালিকা দেখুন"),
-        BotCommand(command="reset_exclude", description="ব্লকলিস্ট রিসেট করে ডিফল্ট 57350 করুন"),
-        BotCommand(command="operator", description="অপারেটর সেট করুন (/operator claro,tigo বা any)"),
-        BotCommand(command="operator_list", description="বর্তমানে সেট করা অপারেটর দেখুন"),
-    ]
-    await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
-    logging.info("Telegram bot command menu registered.")
+    # Clean old commands - everything is controlled via clean buttons
+    await bot.delete_my_commands()
+    logging.info("Old command menu cleared. Native button interface initialized.")
 
     if WEBHOOK_URL:
         webhook_path = f"{WEBHOOK_URL}/webhook/telegram"
@@ -43,7 +38,7 @@ async def on_startup(bot: Bot):
         logging.info("Running in polling mode, deleted webhooks")
 
 async def handle_ping(request):
-    return web.Response(text="Bot is alive!")
+    return web.Response(text="HeroSMS Bot is alive!")
 
 def main():
     if not TOKEN:
@@ -59,9 +54,7 @@ def main():
     dp.startup.register(on_startup)
 
     app = web.Application()
-    
     app.router.add_get("/", handle_ping)
-    
     app.router.add_get("/webhook", handle_herosms_webhook)
     app.router.add_post("/webhook", handle_herosms_webhook)
     app.router.add_get("/herosms_webhook", handle_herosms_webhook)
