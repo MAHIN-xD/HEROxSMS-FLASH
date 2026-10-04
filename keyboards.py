@@ -81,6 +81,13 @@ def fresh_numbers_menu(fresh_phones: list, batch_id: str) -> InlineKeyboardMarku
     b.row(InlineKeyboardButton(text="🔙 Back", callback_data=f"back_bulk_{batch_id}"))
     return b.as_markup()
 
+def api_key_view_menu() -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="🔄 Change API Key", callback_data="tool_change_api_key")
+    b.button(text="Back", callback_data="tools_main")
+    b.adjust(1)
+    return b.as_markup()
+
 def tools_menu(maintenance: bool, restock: bool) -> InlineKeyboardMarkup:
     maint_status = "ON" if maintenance else "OFF"
     restock_status = "ON" if restock else "OFF"
@@ -94,34 +101,37 @@ def tools_menu(maintenance: bool, restock: bool) -> InlineKeyboardMarkup:
     b.button(text="💰 Check Balance", callback_data="tool_balance")
     b.button(text="📊 HeroSMS Stats", callback_data="tool_stats")
     
-    # Row 3: Live Settings
+    # Row 3: API Key & Live Settings
+    b.button(text="🔑 View / Change API Key", callback_data="tool_view_api_key")
     b.button(text="💵 Set Max Price", callback_data="tool_set_max_price")
+    
+    # Row 4: Restock Alert
     b.button(text=f"🔔 Restock Alert: {restock_status}", callback_data="tool_toggle_restock")
     
-    # Row 4: Operator Settings
+    # Row 5: Operator Settings
     b.button(text="📡 Set Operator", callback_data="tool_set_operator")
     b.button(text="📋 Operator List", callback_data="tool_operator_list")
     b.button(text="🔄 Reset Operator", callback_data="tool_reset_operator")
     
-    # Row 5: Prefix Exclude Settings
+    # Row 6: Prefix Exclude Settings
     b.button(text="➕ Exclude Prefix", callback_data="tool_exclude")
     b.button(text="➖ Unexclude", callback_data="tool_unexclude")
     b.button(text="📜 Exclude List", callback_data="tool_exclude_list")
     b.button(text="🔄 Reset Exclude", callback_data="tool_reset_exclude")
     
-    # Row 6: Single Activations Ops
+    # Row 7: Single Activations Ops
     b.button(text="🔁 Retry Number", callback_data="tool_retry")
     b.button(text="❌ Cancel Specific", callback_data="tool_cancel_number")
     
-    # Row 7: Stealth Access Controls
+    # Row 8: Stealth Access Controls
     b.button(text="👥 Add User", callback_data="tool_add_user")
     b.button(text="❌ Revoke User", callback_data="tool_revoke_user")
     b.button(text="🚫 Ban / Unban", callback_data="admin_ban")
     
-    # Row 8: System Controls
+    # Row 9: System Controls
     b.button(text="📢 Broadcast", callback_data="admin_broadcast")
     b.button(text=f"⚙️ Maintenance: {maint_status}", callback_data="admin_maintenance")
     b.button(text="🔙 Back to Main Menu", callback_data="menu_main")
     
-    b.adjust(2, 2, 2, 3, 4, 2, 3, 2, 1)
+    b.adjust(2, 2, 2, 1, 3, 4, 2, 3, 2, 1)
     return b.as_markup()
