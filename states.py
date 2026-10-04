@@ -13,3 +13,4 @@ class BotStates(StatesGroup):
     waiting_for_unexclude = State()
     waiting_for_retry = State()
     waiting_for_cancel = State()
+    waiting_for_sniper_operator = State()
