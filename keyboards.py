@@ -118,10 +118,6 @@ def tools_menu(maintenance: bool, restock: bool) -> InlineKeyboardMarkup:
     b.button(text="📜 Exclude List", callback_data="tool_exclude_list")
     b.button(text="🔄 Reset Exclude", callback_data="tool_reset_exclude")
     
-    # Row 7: Single Activations Ops
-    b.button(text="🔁 Retry Number", callback_data="tool_retry")
-    b.button(text="❌ Cancel Specific", callback_data="tool_cancel_number")
-    
     # Row 8: Stealth Access Controls
     b.button(text="👥 Add User", callback_data="tool_add_user")
     b.button(text="❌ Revoke User", callback_data="tool_revoke_user")
