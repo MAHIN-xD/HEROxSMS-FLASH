@@ -400,7 +400,8 @@ async def cb_tools_page_2(callback: CallbackQuery, state: FSMContext):
     snapshot = (
         f"🛠️ <b>Control Center & Tools (Page 2/2)</b>\n\n"
         f"⚙️ <b>Advanced & Administrative Controls:</b>\n"
-        f"• Prefix Blacklist & Whitelist\n"
+        f"• HeroSMS API Key Management\n"
+        f"• Live Account Balance & Statistics\n"
         f"• User Approval & Revocation\n"
         f"• System Maintenance & Broadcast\n\n"
         f"Select an action from below:"
@@ -450,7 +451,7 @@ async def cb_tool_balance(callback: CallbackQuery):
     if bal is not None:
         alert = "\n\n⚠️ <b>Warning:</b> Balance is below $0.50! Please recharge soon." if bal < 0.50 else ""
         text = f"💰 <b>Your Current Balance:</b> <code>{bal:.4f} USD</code>{alert}"
-        await callback.message.edit_text(text, reply_markup=kb.back_button("tools_page_1"), parse_mode=ParseMode.HTML)
+        await callback.message.edit_text(text, reply_markup=kb.back_button("tools_page_2"), parse_mode=ParseMode.HTML)
     else:
         await callback.answer("Error fetching balance.", show_alert=True)
 
@@ -511,7 +512,7 @@ async def cb_tool_stats(callback: CallbackQuery):
     await callback.answer("Fetching HeroSMS Stats...")
     res = await client.get_stats()
     if not res or not isinstance(res, dict) or "data" not in res:
-        return await callback.message.edit_text("HeroSMS is compiling statistics. Please check back shortly.", reply_markup=kb.back_button("tools_page_1"))
+        return await callback.message.edit_text("HeroSMS is compiling statistics. Please check back shortly.", reply_markup=kb.back_button("tools_page_2"))
 
     data = res.get("data", {})
     display_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -544,7 +545,7 @@ async def cb_tool_stats(callback: CallbackQuery):
     final_text = "\n".join(lines)
     if len(final_text) > 4000:
         final_text = final_text[:3990] + "..."
-    await callback.message.edit_text(final_text, reply_markup=kb.back_button("tools_page_1"), parse_mode=ParseMode.HTML)
+    await callback.message.edit_text(final_text, reply_markup=kb.back_button("tools_page_2"), parse_mode=ParseMode.HTML)
 
 # --- Button: Active Numbers ---
 @router.callback_query(F.data == "tool_active_numbers")
@@ -622,7 +623,7 @@ async def cb_tool_reset_op(callback: CallbackQuery):
 async def cb_tool_exclude(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "➕ <b>Exclude Prefix:</b>\n\nSend prefix to blacklist (e.g. <code>57350</code> or <code>57300,57301</code>):",
-        reply_markup=kb.back_button("tools_page_2"),
+        reply_markup=kb.back_button("tools_page_1"),
         parse_mode=ParseMode.HTML
     )
     await state.set_state(BotStates.waiting_for_exclude)
@@ -649,7 +650,7 @@ async def process_exclude_input(message: Message, state: FSMContext):
 async def cb_tool_unexclude(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "➖ <b>Unexclude Prefix:</b>\n\nSend prefix to remove from blacklist (e.g. <code>57350</code>):",
-        reply_markup=kb.back_button("tools_page_2"),
+        reply_markup=kb.back_button("tools_page_1"),
         parse_mode=ParseMode.HTML
     )
     await state.set_state(BotStates.waiting_for_unexclude)
@@ -677,7 +678,7 @@ async def cb_tool_exclude_list(callback: CallbackQuery):
     cur_str = await get_excluded_prefixes_str()
     prefixes = cur_str.split(",") if cur_str else []
     formatted = "\n".join(f"- <code>+{p}</code>" for p in prefixes) if prefixes else "Empty"
-    await callback.message.edit_text(f"📜 <b>Currently Blacklisted Prefixes:</b>\n\n{formatted}", reply_markup=kb.back_button("tools_page_2"), parse_mode=ParseMode.HTML)
+    await callback.message.edit_text(f"📜 <b>Currently Blacklisted Prefixes:</b>\n\n{formatted}", reply_markup=kb.back_button("tools_page_1"), parse_mode=ParseMode.HTML)
 
 @router.callback_query(F.data == "tool_reset_exclude")
 async def cb_tool_reset_exclude(callback: CallbackQuery):
@@ -685,14 +686,14 @@ async def cb_tool_reset_exclude(callback: CallbackQuery):
     await db.set_setting("excluded_prefixes", saved_str)
     set_cached_setting("excluded_prefixes", saved_str)
     await callback.answer("Blacklist reset to default (57350, 57351)!", show_alert=True)
-    return await cb_tools_page_2(callback, None)
+    return await cb_tools_page_1(callback, None)
 
 # --- Retry & Cancel Specific Number ---
 @router.callback_query(F.data == "tool_retry")
 async def cb_tool_retry(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
         "🔁 <b>Retry Number:</b>\n\nSend the Number or Activation ID to resend SMS:",
-        reply_markup=kb.back_button("tools_page_2"),
+        reply_markup=kb.back_button("tools_page_1"),
         parse_mode=ParseMode.HTML
     )
     await state.set_state(BotStates.waiting_for_retry)
