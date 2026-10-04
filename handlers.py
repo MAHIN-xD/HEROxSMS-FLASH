@@ -258,9 +258,8 @@ async def is_allowed(user_id: int) -> bool:
     if user_id == ADMIN_ID: 
         return True
     
-    # Stealth mode check
     user = await db.get_user(user_id)
-    if not user or user.get("is_banned") or not user.get("is_approved"):
+    if not user or user["is_banned"] or not user["is_approved"]:
         return False
         
     maintenance = await get_cached_setting("maintenance", "0")
@@ -334,27 +333,43 @@ async def handle_herosms_webhook(request: web.Request):
 
     return web.Response(text="OK", status=200)
 
-# --- Start Command (Dead Bot Silence for Unauthorized) ---
+# --- Start Command (Super Admin Instant Pass + Dead Bot Silence for Unauthorized) ---
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     uid = message.from_user.id
 
-    # Admin is automatically approved and active
+    # 1. SUPER ADMIN BYPASS: Admin kokhono dead mode ba unauthorized hobe na
     if uid == ADMIN_ID:
-        await db.add_user(uid, message.from_user.username, message.from_user.full_name, is_approved=1)
-    else:
-        user = await db.get_user(uid)
-        # Dead bot mode: completely drop interaction without responding
-        if not user or not user.get("is_approved") or user.get("is_banned"):
-            return
+        try:
+            await db.add_user(uid)
+            await db.set_approval_status(uid, True)
+        except Exception:
+            pass
 
-    user = await db.get_user(uid)
-    maintenance = await get_cached_setting("maintenance", "0")
-    if maintenance == "1" and uid != ADMIN_ID:
+        user = await db.get_user(uid)
+        has_api_key = bool(user and user["api_key"])
+        if not has_api_key:
+            await message.answer(
+                "👑 <b>Welcome Admin!</b>\n\nPlease send your HeroSMS API Key to get started:",
+                reply_markup=ReplyKeyboardRemove(),
+                parse_mode=ParseMode.HTML
+            )
+            await state.set_state(BotStates.waiting_for_api_key)
+        else:
+            await message.answer("👑 Welcome back Admin!", reply_markup=kb.main_reply_menu())
         return
 
-    has_api_key = bool(user and user.get("api_key"))
+    # 2. GENERAL USERS: Dead Bot Mode (Silent Drop for unauthorized/banned)
+    user = await db.get_user(uid)
+    if not user or not user["is_approved"] or user["is_banned"]:
+        return
+
+    maintenance = await get_cached_setting("maintenance", "0")
+    if maintenance == "1":
+        return
+
+    has_api_key = bool(user and user["api_key"])
     if not has_api_key:
         await message.answer(
             "Welcome to HeroSMS Bot!\n\nPlease send your HeroSMS API Key to get started.",
@@ -425,7 +440,8 @@ async def open_tools_menu(message: Message):
 
 @router.callback_query(F.data == "tools_main")
 async def cb_tools_main(callback: CallbackQuery, state: FSMContext):
-    await state.clear()
+    if state:
+        await state.clear()
     if not await is_allowed(callback.from_user.id): 
         return
     maintenance = (await get_cached_setting("maintenance", "0")) == "1"
@@ -1350,7 +1366,7 @@ async def process_ban_id(message: Message, state: FSMContext):
     user = await db.get_user(target)
     if not user:
         return await message.answer("User not found.")
-    new_status = not bool(user.get("is_banned"))
+    new_status = not bool(user["is_banned"])
     await db.set_ban_status(target, new_status)
     label = "BANNED 🚫" if new_status else "UNBANNED ✅"
     await message.answer(f"User <code>{target}</code> is now <b>{label}</b>.", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
