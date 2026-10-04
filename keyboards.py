@@ -93,35 +93,74 @@ def api_key_cancel_menu() -> InlineKeyboardMarkup:
     b.adjust(1)
     return b.as_markup()
 
-def tools_menu_page_1() -> InlineKeyboardMarkup:
+def sniper_alert_menu(operator: str) -> InlineKeyboardMarkup:
+    """Claro ba specific operator paowa gele instant bulk buy buttons"""
     b = InlineKeyboardBuilder()
+    b.button(text="Buy 5 Pcs", callback_data=f"snipe_buy_{operator}_5")
+    b.button(text="Buy 10 Pcs", callback_data=f"snipe_buy_{operator}_10")
+    b.button(text="Buy 20 Pcs", callback_data=f"snipe_buy_{operator}_20")
+    b.button(text="Buy 50 Pcs", callback_data=f"snipe_buy_{operator}_50")
+    b.button(text="🛑 Stop Sniper", callback_data="tool_toggle_sniper")
+    b.adjust(2, 2, 1)
+    return b.as_markup()
+
+def tools_menu_page_1(sniper_active: bool, sniper_op: str = "") -> InlineKeyboardMarkup:
+    """Page 1: Sniper Shobar Prothome, Tar Niche Balance, Erpor Operators & Excludes"""
+    b = InlineKeyboardBuilder()
+    
+    sniper_text = f"🎯 Sniper: ON ({sniper_op.upper()})" if sniper_active else "🎯 Auto Sniper Monitor: OFF"
+    
+    # Row 1: Sniper Shobar Age
+    b.button(text=sniper_text, callback_data="tool_toggle_sniper")
+    
+    # Row 2: Sniper er nichei Balance & Active Numbers
+    b.button(text="💰 Check Balance", callback_data="tool_balance")
     b.button(text="📱 Active Numbers", callback_data="tool_active_numbers")
+    
+    # Row 3: Max Price & Set Operator
     b.button(text="💵 Set Max Price", callback_data="tool_set_max_price")
     b.button(text="📡 Set Operator", callback_data="tool_set_operator")
+    
+    # Row 4: Operator List & Reset
     b.button(text="📋 Operator List", callback_data="tool_operator_list")
+    b.button(text="🔄 Reset Operator", callback_data="tool_reset_operator")
+    
+    # Row 5: Exclude & Unexclude
     b.button(text="➕ Exclude Prefix", callback_data="tool_exclude")
     b.button(text="➖ Unexclude Prefix", callback_data="tool_unexclude")
+    
+    # Row 6: Exclude List & Reset Exclude
     b.button(text="📜 Exclude List", callback_data="tool_exclude_list")
     b.button(text="🔄 Reset Exclude", callback_data="tool_reset_exclude")
-    b.button(text="🔄 Reset Operator", callback_data="tool_reset_operator")
+    
+    # Row 7: Retry Number
     b.button(text="🔁 Retry Number", callback_data="tool_retry")
+    
+    # Row 8: Navigation
     b.button(text="➡️ Next Page", callback_data="tools_page_2")
     b.button(text="🔙 Back to Main Menu", callback_data="menu_main")
-    b.adjust(2, 2, 2, 2, 2, 2)
+    
+    b.adjust(1, 2, 2, 2, 2, 2, 1, 2)
     return b.as_markup()
 
 def tools_menu_page_2(maintenance: bool) -> InlineKeyboardMarkup:
+    """Page 2: API Key, Stats, Single Cancel & Admin Management"""
     maint_status = "ON" if maintenance else "OFF"
     b = InlineKeyboardBuilder()
+    
     b.button(text="🔑 View / Change API Key", callback_data="tool_view_api_key")
-    b.button(text="💰 Check Balance", callback_data="tool_balance")
     b.button(text="📊 HeroSMS Stats", callback_data="tool_stats")
+    
     b.button(text="❌ Cancel Number", callback_data="tool_cancel_number")
     b.button(text="👥 Add User", callback_data="tool_add_user")
+    
     b.button(text="❌ Revoke User", callback_data="tool_revoke_user")
     b.button(text="🚫 Ban / Unban User", callback_data="admin_ban")
+    
     b.button(text="📢 Broadcast Message", callback_data="admin_broadcast")
-    b.button(text=f"⚙️️ Maintenance: {maint_status}", callback_data="admin_maintenance")
+    b.button(text=f"⚙️ Maintenance: {maint_status}", callback_data="admin_maintenance")
+    
     b.button(text="⬅️ Previous Page", callback_data="tools_page_1")
-    b.adjust(2, 2, 2, 2, 2)
+    
+    b.adjust(2, 2, 2, 2, 1)
     return b.as_markup()
