@@ -395,8 +395,9 @@ async def process_api_key(message: Message, state: FSMContext):
             await db.update_api_key(message.from_user.id, api_key)
             await state.clear()
             await message.answer(
-                f"✅ API Key saved successfully!\n💰 Balance: {balance:.4f} USD",
-                reply_markup=kb.main_reply_menu()
+                f"✅ API Key saved successfully!\n💰 Balance: <code>{balance:.4f} USD</code>",
+                reply_markup=kb.main_reply_menu(),
+                parse_mode=ParseMode.HTML
             )
         else:
             await message.answer("❌ Invalid API Key. Please check and try again.")
@@ -461,6 +462,38 @@ async def cb_tools_main(callback: CallbackQuery, state: FSMContext):
         f"Select any tool or action from the buttons below:"
     )
     await callback.message.edit_text(snapshot, reply_markup=kb.tools_menu(maintenance, restock), parse_mode=ParseMode.HTML)
+
+# --- Button: View / Change API Key ---
+@router.callback_query(F.data == "tool_view_api_key")
+async def cb_tool_view_api_key(callback: CallbackQuery):
+    user = await db.get_user(callback.from_user.id)
+    api_k = user.get("api_key") if user else None
+    
+    if api_k:
+        masked_preview = f"{api_k[:6]}...{api_k[-4:]}"
+        text = (
+            f"🔑 <b>Your HeroSMS API Key:</b>\n\n"
+            f"<code>{api_k}</code>\n\n"
+            f"• Preview: <code>{masked_preview}</code>\n"
+            f"• Status: 🟢 <b>Configured</b>\n\n"
+            f"<i>Tap above to copy your key or click below to update it.</i>"
+        )
+    else:
+        text = (
+            f"🔑 <b>API Key Not Set!</b>\n\n"
+            f"You have not configured your HeroSMS API key yet."
+        )
+    
+    await callback.message.edit_text(text, reply_markup=kb.api_key_view_menu(), parse_mode=ParseMode.HTML)
+
+@router.callback_query(F.data == "tool_change_api_key")
+async def cb_tool_change_api_key(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        "🔑 <b>Update API Key:</b>\n\nPlease send your new HeroSMS API Key:",
+        reply_markup=kb.back_button(),
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(BotStates.waiting_for_api_key)
 
 # --- Button: Check Balance ---
 @router.callback_query(F.data == "tool_balance")
