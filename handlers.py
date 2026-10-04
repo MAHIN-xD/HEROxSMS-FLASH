@@ -33,16 +33,37 @@ ADMIN_ID    = 7266067201
 COLOMBIA_ID = 33
 TG_SERVICE  = "tg"
 
-# 0.135 theke 0.150 er moddhe shob available rate grab korbe
-MAX_PRICE   = 0.150
-
 DEFAULT_EXCLUDE_LIST = ["57350", "57351"]
 DEFAULT_OPERATOR = "any"
 
 processed_otps = {}
+phone_otp_counter = {}
 fresh_batches_cache = {}
+last_known_stocks = {}
 
-MENU_BUTTONS = ["Bulk Buy Numbers", "Active Numbers"]
+MENU_BUTTONS = ["Bulk Buy Numbers", "Finish", "🛠 Tools"]
+
+# --- Fast RAM Cache ---
+USER_CACHE = {}
+SETTINGS_CACHE = {}
+
+async def get_cached_setting(key: str, default: str = "") -> str:
+    if key in SETTINGS_CACHE:
+        return SETTINGS_CACHE[key]
+    val = await db.get_setting(key)
+    res = str(val) if val is not None else default
+    SETTINGS_CACHE[key] = res
+    return res
+
+def set_cached_setting(key: str, val: str):
+    SETTINGS_CACHE[key] = str(val)
+
+async def get_dynamic_max_price() -> float:
+    saved = await get_cached_setting("max_price", "0.180")
+    try:
+        return float(saved)
+    except Exception:
+        return 0.180
 
 def clean_error_text(raw_err: any) -> str:
     if not raw_err:
@@ -55,14 +76,13 @@ def clean_error_text(raw_err: any) -> str:
 def cleanup_expired_cache():
     now = time.time()
     for k in list(processed_otps.keys()):
-        if now - processed_otps[k] > 1200:
+        if now - processed_otps[k] > 1800:
             del processed_otps[k]
     for b_id in list(fresh_batches_cache.keys()):
         if now - fresh_batches_cache[b_id].get("created_at", 0) > 1800:
             del fresh_batches_cache[b_id]
 
 async def start_periodic_janitor():
-    """Background-e RAM ebong cache clean rakhe"""
     while True:
         try:
             await asyncio.sleep(600)
@@ -72,13 +92,72 @@ async def start_periodic_janitor():
         except Exception as e:
             logging.error(f"Janitor error: {e}")
 
+async def start_restock_monitor():
+    await asyncio.sleep(15)
+    first_run = True
+    while True:
+        try:
+            is_enabled = await get_cached_setting("restock_monitor", "0")
+            if is_enabled == "1":
+                admin_user = await db.get_user(ADMIN_ID)
+                if admin_user and admin_user.get("api_key"):
+                    client = HeroSMSClient(admin_user["api_key"])
+                    raw_res = await client.get_prices(country=COLOMBIA_ID, service=TG_SERVICE)
+                    
+                    c_dict = {}
+                    if isinstance(raw_res, dict):
+                        if "33" in raw_res:
+                            c_dict = raw_res["33"].get("tg", raw_res["33"])
+                        elif 33 in raw_res:
+                            c_dict = raw_res[33].get("tg", raw_res[33])
+                        elif "tg" in raw_res:
+                            c_dict = raw_res["tg"].get("33", raw_res["tg"])
+                        else:
+                            for k, v in raw_res.items():
+                                if str(k) == "33" and isinstance(v, dict):
+                                    c_dict = v.get("tg", v)
+                                    break
+
+                    if isinstance(c_dict, dict):
+                        current_max = await get_dynamic_max_price()
+                        for op_key, op_info in c_dict.items():
+                            op_name = str(op_key).lower()
+                            cnt = 0
+                            cost = 0.0
+                            if isinstance(op_info, dict):
+                                cnt = int(op_info.get("count") or op_info.get("amount") or op_info.get("qty") or 0)
+                                cost = float(op_info.get("cost") or op_info.get("price") or op_info.get("rate") or 0.0)
+                            elif isinstance(op_info, (int, str)) and str(op_info).isdigit():
+                                cnt = int(op_info)
+
+                            prev_cnt = last_known_stocks.get(op_name, 0)
+                            is_initial = first_run and cnt >= 5
+                            is_restocked = (cnt - prev_cnt) >= 5
+
+                            if (is_initial or is_restocked) and cost <= current_max:
+                                bot = get_bot_instance()
+                                if bot:
+                                    alert_msg = (
+                                        f"🚨 <b>RESTOCK ALERT!</b>\n\n"
+                                        f"📡 Operator: <b>{op_name.upper()}</b>\n"
+                                        f"💵 Rate: <b>${cost:.3f}</b>\n"
+                                        f"📦 Available Stock: <b>{cnt} numbers</b>\n\n"
+                                        f"💡 <i>Purchase now from Bulk Buy Numbers!</i>"
+                                    )
+                                    try:
+                                        await bot.send_message(ADMIN_ID, alert_msg, parse_mode=ParseMode.HTML)
+                                    except Exception:
+                                        pass
+                            last_known_stocks[op_name] = cnt
+                        first_run = False
+        except Exception as e:
+            logging.error(f"Restock worker error: {e}")
+        await asyncio.sleep(60)
+
 async def auto_cancel_bad_numbers(client: HeroSMSClient, bad_items: list):
-    """
-    Occupied ba Banned number-gulo 2-minute HeroSMS lock window seshe auto cancel kore balance refund niye ashe
-    """
     if not bad_items:
         return
-    await asyncio.sleep(125)  # 2 minute rule safe delay
+    await asyncio.sleep(125)
     for item in bad_items:
         aid = item.get("aid")
         if not aid:
@@ -110,10 +189,11 @@ def get_colombia_operator(phone: str) -> str:
         return "Virgin"
     return "Unknown"
 
-def format_otp_text(phone: str, code: str) -> str:
+def format_otp_text(phone: str, code: str, is_second: bool = False) -> str:
     clean_phone = str(phone).lstrip("+").strip()
     safe_phone = html.escape(clean_phone)
-    return f"🇨🇴 <b>Telegram</b> <code>{safe_phone}</code>"
+    suffix = " (2nd SMS)" if is_second else ""
+    return f"🇨🇴 <b>Telegram</b> <code>{safe_phone}</code>{suffix}"
 
 def format_tg_status(raw_status: any) -> dict:
     if raw_status is None:
@@ -154,15 +234,13 @@ def format_tg_status(raw_status: any) -> dict:
         return {"badge": "🚫 Banned", "priority": 4, "is_fresh": False, "is_error": False}
 
     clean = clean_error_text(st)
-    return {"badge": f"⚠️️ {clean}", "priority": 5, "is_fresh": False, "is_error": False}
+    return {"badge": f"⚠ {clean}", "priority": 5, "is_fresh": False, "is_error": False}
 
 async def get_excluded_prefixes_str() -> str:
-    saved = await db.get_setting("excluded_prefixes")
-    return str(saved) if saved else ",".join(DEFAULT_EXCLUDE_LIST)
+    return await get_cached_setting("excluded_prefixes", ",".join(DEFAULT_EXCLUDE_LIST))
 
 async def get_preferred_operator_str() -> str:
-    saved = await db.get_setting("preferred_operator")
-    return str(saved) if saved else DEFAULT_OPERATOR
+    return await get_cached_setting("preferred_operator", DEFAULT_OPERATOR)
 
 async def get_valid_user_client(user_id: int):
     user = await db.get_user(user_id)
@@ -177,16 +255,18 @@ async def get_valid_user_client(user_id: int):
         return None, None
 
 async def is_allowed(user_id: int) -> bool:
-    if user_id == ADMIN_ID: return True
+    if user_id == ADMIN_ID: 
+        return True
+    
+    # Stealth mode check
     user = await db.get_user(user_id)
-    try:
-        if user and user["is_banned"]: return False
-    except Exception:
-        pass
-    maintenance = await db.get_setting("maintenance")
+    if not user or user.get("is_banned") or not user.get("is_approved"):
+        return False
+        
+    maintenance = await get_cached_setting("maintenance", "0")
     return maintenance != "1"
 
-# --- Webhook Handler ---
+# --- Webhook Handler (Supports 2nd OTP Seamlessly) ---
 async def handle_herosms_webhook(request: web.Request):
     data = {}
     try:
@@ -232,9 +312,14 @@ async def handle_herosms_webhook(request: web.Request):
                 phone = row[1]
         
         if user_id and phone:
+            clean_p = str(phone).lstrip("+").strip()
+            count = phone_otp_counter.get(clean_p, 0) + 1
+            phone_otp_counter[clean_p] = count
+            is_second = (count > 1)
+
             bot = get_bot_instance()
             if bot:
-                msg_text = format_otp_text(phone, code)
+                msg_text = format_otp_text(phone, code, is_second=is_second)
                 try:
                     await bot.send_message(
                         user_id,
@@ -249,31 +334,27 @@ async def handle_herosms_webhook(request: web.Request):
 
     return web.Response(text="OK", status=200)
 
+# --- Start Command (Dead Bot Silence for Unauthorized) ---
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
-    await db.add_user(message.from_user.id)
-    user = await db.get_user(message.from_user.id)
+    uid = message.from_user.id
 
-    try:
-        if user and user["is_banned"]:
-            await message.answer("You are banned from using this bot.")
+    # Admin is automatically approved and active
+    if uid == ADMIN_ID:
+        await db.add_user(uid, message.from_user.username, message.from_user.full_name, is_approved=1)
+    else:
+        user = await db.get_user(uid)
+        # Dead bot mode: completely drop interaction without responding
+        if not user or not user.get("is_approved") or user.get("is_banned"):
             return
-    except Exception:
-        pass
 
-    maintenance = await db.get_setting("maintenance")
-    if maintenance == "1" and message.from_user.id != ADMIN_ID:
-        await message.answer("Bot is under maintenance. Contact Admin.")
+    user = await db.get_user(uid)
+    maintenance = await get_cached_setting("maintenance", "0")
+    if maintenance == "1" and uid != ADMIN_ID:
         return
 
-    has_api_key = False
-    try:
-        if user and user["api_key"]:
-            has_api_key = True
-    except Exception:
-        has_api_key = False
-
+    has_api_key = bool(user and user.get("api_key"))
     if not has_api_key:
         await message.answer(
             "Welcome to HeroSMS Bot!\n\nPlease send your HeroSMS API Key to get started.",
@@ -303,549 +384,575 @@ async def process_api_key(message: Message, state: FSMContext):
                 reply_markup=kb.main_reply_menu()
             )
         else:
-            res = await client._get("getBalance")
-            err_msg = ""
-            if isinstance(res, dict):
-                err_msg = res.get("title") or res.get("details") or str(res)
-            elif isinstance(res, str):
-                err_msg = res
-            
-            clean_err = clean_error_text(err_msg)
-            if clean_err and clean_err != "None":
-                await message.answer(f"❌ Invalid API Key ({clean_err}). Please check and try again.")
-            else:
-                await message.answer("❌ Invalid API Key. Please check and try again.")
+            await message.answer("❌ Invalid API Key. Please check and try again.")
 
 @router.callback_query(F.data == "menu_main")
 async def cb_menu_main(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    if not await is_allowed(callback.from_user.id): return
-    try: await callback.message.delete()
-    except Exception: pass
+    if not await is_allowed(callback.from_user.id): 
+        return
+    try: 
+        await callback.message.delete()
+    except Exception: 
+        pass
     await callback.message.answer("Main Menu:", reply_markup=kb.main_reply_menu())
 
-# --- /balance ---
-@router.message(Command("balance"))
-@router.message(F.text == "Balance")
-async def cmd_balance(message: Message):
-    if not await is_allowed(message.from_user.id): return
+# --- Quick Tools Dashboard ---
+@router.message(F.text == "🛠 Tools")
+@router.message(Command("admin"))
+async def open_tools_menu(message: Message):
+    if not await is_allowed(message.from_user.id): 
+        return
+    
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-        user, client = await get_valid_user_client(message.from_user.id)
-        if not user or not client:
-            await message.answer("Please set your HeroSMS API Key first with /api")
-            return
-        balance = await client.get_balance()
-        if balance is not None:
-            await message.answer(f"💰 Your Current Balance: <b>{balance:.4f} USD</b>", parse_mode=ParseMode.HTML)
-        else:
-            await message.answer("❌ Error fetching balance. Check your API key.")
+        maintenance = (await get_cached_setting("maintenance", "0")) == "1"
+        restock = (await get_cached_setting("restock_monitor", "0")) == "1"
+        max_p = await get_dynamic_max_price()
+        op = await get_preferred_operator_str()
+        exc = await get_excluded_prefixes_str()
+        exc_count = len([x for x in exc.split(",") if x.strip()])
+        
+        snapshot = (
+            f"🛠️ <b>Control Center & Tools</b>\n\n"
+            f"📊 <b>Quick Stats Snapshot:</b>\n"
+            f"• Max Price Limit: <code>${max_p:.3f}</code>\n"
+            f"• Active Operator: <code>{op.upper()}</code>\n"
+            f"• Blacklisted Prefixes: <code>{exc_count} Active</code>\n"
+            f"• Restock Monitor: <code>{'ACTIVE' if restock else 'MUTED'}</code>\n\n"
+            f"Select any tool or action from the buttons below:"
+        )
+        await message.answer(snapshot, reply_markup=kb.tools_menu(maintenance, restock), parse_mode=ParseMode.HTML)
 
-# --- /api ---
-@router.message(Command("api"))
-async def cmd_api(message: Message, state: FSMContext):
-    if not await is_allowed(message.from_user.id): return
-    await message.answer(
-        "🔑 <b>Update API Key</b>\n\nPlease send your new HeroSMS API Key:",
-        reply_markup=ReplyKeyboardRemove(),
+@router.callback_query(F.data == "tools_main")
+async def cb_tools_main(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    if not await is_allowed(callback.from_user.id): 
+        return
+    maintenance = (await get_cached_setting("maintenance", "0")) == "1"
+    restock = (await get_cached_setting("restock_monitor", "0")) == "1"
+    max_p = await get_dynamic_max_price()
+    op = await get_preferred_operator_str()
+    exc = await get_excluded_prefixes_str()
+    exc_count = len([x for x in exc.split(",") if x.strip()])
+    
+    snapshot = (
+        f"🛠️ <b>Control Center & Tools</b>\n\n"
+        f"📊 <b>Quick Stats Snapshot:</b>\n"
+        f"• Max Price Limit: <code>${max_p:.3f}</code>\n"
+        f"• Active Operator: <code>{op.upper()}</code>\n"
+        f"• Blacklisted Prefixes: <code>{exc_count} Active</code>\n"
+        f"• Restock Monitor: <code>{'ACTIVE' if restock else 'MUTED'}</code>\n\n"
+        f"Select any tool or action from the buttons below:"
+    )
+    await callback.message.edit_text(snapshot, reply_markup=kb.tools_menu(maintenance, restock), parse_mode=ParseMode.HTML)
+
+# --- Button: Check Balance ---
+@router.callback_query(F.data == "tool_balance")
+async def cb_tool_balance(callback: CallbackQuery):
+    user, client = await get_valid_user_client(callback.from_user.id)
+    if not user or not client:
+        return await callback.answer("API Key not found.", show_alert=True)
+    bal = await client.get_balance()
+    if bal is not None:
+        alert = "\n\n⚠️ <b>Warning:</b> Balance is below $0.50! Please recharge soon." if bal < 0.50 else ""
+        text = f"💰 <b>Your Current Balance:</b> <code>{bal:.4f} USD</code>{alert}"
+        await callback.message.edit_text(text, reply_markup=kb.back_button(), parse_mode=ParseMode.HTML)
+    else:
+        await callback.answer("Error fetching balance.", show_alert=True)
+
+# --- Button: Live Stock & True Rates ---
+@router.callback_query(F.data == "tool_live_stock")
+async def cb_tool_live_stock(callback: CallbackQuery):
+    user, client = await get_valid_user_client(callback.from_user.id)
+    if not user or not client:
+        return await callback.answer("Set your API Key first.", show_alert=True)
+
+    await callback.answer("Fetching live stock from HeroSMS...")
+    raw_res = await client.get_prices(country=COLOMBIA_ID, service=TG_SERVICE)
+    
+    if not isinstance(raw_res, dict):
+        return await callback.message.edit_text(f"❌ Failed to load live stock: {html.escape(str(raw_res))}", reply_markup=kb.back_button())
+
+    c_dict = {}
+    if "33" in raw_res:
+        c_dict = raw_res["33"].get("tg", raw_res["33"])
+    elif 33 in raw_res:
+        c_dict = raw_res[33].get("tg", raw_res[33])
+    elif "tg" in raw_res:
+        c_dict = raw_res["tg"].get("33", raw_res["tg"])
+    else:
+        for k, v in raw_res.items():
+            if str(k) == "33" and isinstance(v, dict):
+                c_dict = v.get("tg", v)
+                break
+        if not c_dict and "claro" in str(raw_res).lower():
+            c_dict = raw_res
+
+    found_ops = {}
+    total_available = 0
+
+    if isinstance(c_dict, dict):
+        for op_key, op_info in c_dict.items():
+            op_name = str(op_key).lower()
+            cnt = 0
+            cost = 0.0
+            if isinstance(op_info, dict):
+                cnt = int(op_info.get("count") or op_info.get("amount") or op_info.get("qty") or 0)
+                cost = float(op_info.get("cost") or op_info.get("price") or op_info.get("rate") or 0.0)
+            elif isinstance(op_info, (int, str)) and str(op_info).isdigit():
+                cnt = int(op_info)
+            if cnt > 0:
+                found_ops[op_name] = {"count": cnt, "cost": cost}
+                total_available += cnt
+
+    lines = ["🇨🇴 <b>Live Colombia Telegram Stock:</b>\n"]
+    common_ops = ["claro", "tigo", "movistar", "wom", "virgin", "exito", "flash", "any"]
+
+    if found_ops:
+        for op, val in found_ops.items():
+            cost_str = f"${val['cost']:.3f}" if val['cost'] > 0 else "Market"
+            lines.append(f"🟢 <b>{op.upper()}</b>: <b>{val['count']} pcs</b> | Rate: <code>{cost_str}</code>")
+
+    for op in common_ops:
+        if op not in found_ops:
+            lines.append(f"🔴 <b>{op.upper()}</b>: <b>0 pcs</b> | <i>Out of stock</i>")
+
+    lines.append(f"\n📦 <b>Total Stock:</b> <code>{total_available} numbers</code>")
+    await callback.message.edit_text("\n".join(lines), reply_markup=kb.back_button(), parse_mode=ParseMode.HTML)
+
+# --- Button: Restock Alert Toggle ---
+@router.callback_query(F.data == "tool_toggle_restock")
+async def cb_tool_toggle_restock(callback: CallbackQuery):
+    cur = await get_cached_setting("restock_monitor", "0")
+    new_val = "0" if cur == "1" else "1"
+    await db.set_setting("restock_monitor", new_val)
+    set_cached_setting("restock_monitor", new_val)
+    status_label = "ENABLED ✅" if new_val == "1" else "MUTED 🔕"
+    await callback.answer(f"Restock Monitor is now {status_label}!", show_alert=True)
+    return await cb_tools_main(callback, None)
+
+# --- Button: Set Max Price ---
+@router.callback_query(F.data == "tool_set_max_price")
+async def cb_tool_set_max_price(callback: CallbackQuery, state: FSMContext):
+    cur_p = await get_dynamic_max_price()
+    await callback.message.edit_text(
+        f"💵 <b>Current Max Price:</b> <code>${cur_p:.3f}</code>\n\n"
+        f"Please send the new max price (e.g. <code>0.18</code> or <code>0.20</code>):",
+        reply_markup=kb.back_button(),
         parse_mode=ParseMode.HTML
     )
-    await state.set_state(BotStates.waiting_for_api_key)
+    await state.set_state(BotStates.waiting_for_max_price)
 
-# --- /check_operators ---
-@router.message(Command("check_operators", "operators"))
-async def cmd_check_live_operators(message: Message):
-    if not await is_allowed(message.from_user.id): return
-    async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-        user, client = await get_valid_user_client(message.from_user.id)
-        if not user or not client:
-            await message.answer("Please set your API key first with /api")
-            return
+@router.message(BotStates.waiting_for_max_price)
+async def process_new_max_price(message: Message, state: FSMContext):
+    if not await is_allowed(message.from_user.id): 
+        return
+    text = message.text.strip()
+    if text in MENU_BUTTONS:
+        await state.clear()
+        return await message.answer("Action cancelled.")
+    try:
+        new_val = float(text)
+        if new_val <= 0:
+            raise ValueError
+        await db.set_setting("max_price", str(new_val))
+        set_cached_setting("max_price", str(new_val))
+        await state.clear()
+        await message.answer(f"✅ Max Purchase Price updated to <b>${new_val:.3f}</b>!", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
+    except Exception:
+        await message.answer("Enter a valid decimal number (e.g. 0.18):")
 
-        res = await client.get_operators(country=COLOMBIA_ID)
-        if isinstance(res, dict) and res.get("status") == "success":
-            ops_dict = res.get("countryOperators", {})
-            colombia_ops = ops_dict.get(str(COLOMBIA_ID), [])
-            if colombia_ops:
-                op_list = ", ".join(colombia_ops)
-                await message.answer(
-                    f"📡 <b>HeroSMS Live Operators (Colombia):</b>\n\n"
-                    f"<code>{op_list}</code>\n\n"
-                    f"💡 <i>Operator set korte likhun:</i>\n<code>/operator {colombia_ops[0]}</code>",
-                    parse_mode=ParseMode.HTML
-                )
-            else:
-                await message.answer("Colombia-r jonne kono specific operator list nei. Shudhu <code>/operator any</code> kaj korbe.", parse_mode=ParseMode.HTML)
-        else:
-            await message.answer("❌ Operator list load kora jayni.")
+@router.message(Command("max"))
+async def cmd_quick_max_price(message: Message):
+    if not await is_allowed(message.from_user.id):
+        return
+    args = message.text.split()
+    if len(args) < 2:
+        cur_p = await get_dynamic_max_price()
+        return await message.answer(f"Current Max Price: <code>${cur_p:.3f}</code>\nUsage: <code>/max 0.18</code>", parse_mode=ParseMode.HTML)
+    try:
+        new_val = float(args[1].strip())
+        await db.set_setting("max_price", str(new_val))
+        set_cached_setting("max_price", str(new_val))
+        await message.answer(f"✅ Max Purchase Price updated to <b>${new_val:.3f}</b>!", parse_mode=ParseMode.HTML)
+    except Exception:
+        await message.answer("Invalid price format. Usage: <code>/max 0.18</code>", parse_mode=ParseMode.HTML)
 
-# --- /ok ---
+# --- Button: HeroSMS Stats ---
+@router.callback_query(F.data == "tool_stats")
+async def cb_tool_stats(callback: CallbackQuery):
+    user, client = await get_valid_user_client(callback.from_user.id)
+    if not user or not client:
+        return await callback.answer("Set your API Key first.", show_alert=True)
+
+    await callback.answer("Fetching HeroSMS Stats...")
+    res = await client.get_stats()
+    if not res or not isinstance(res, dict) or "data" not in res:
+        return await callback.message.edit_text("HeroSMS is compiling statistics. Please check back shortly.", reply_markup=kb.back_button())
+
+    data = res.get("data", {})
+    display_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    lines = [f"📊 <b>HeroSMS Stats ({display_date}):</b>\n"]
+    total_purchased = 0
+    total_success = 0
+
+    for country_key, services in data.items():
+        if isinstance(services, dict):
+            for service_name, s_data in services.items():
+                if isinstance(s_data, dict):
+                    c_count = s_data.get("count", 0)
+                    c_success = s_data.get("success", 0)
+                    c_percent = float(s_data.get("percent", 0.0))
+                    total_purchased += c_count
+                    total_success += c_success
+                    lines.append(
+                        f"• {service_name.upper()} (ID: {country_key}): "
+                        f"Total <b>{c_count}</b> | Success <b>{c_success}</b> ({c_percent:.1f}%)"
+                    )
+
+    overall_rate = (total_success / total_purchased * 100) if total_purchased > 0 else 0.0
+    lines.append(
+        f"\n-------------------\n"
+        f"<b>Summary:</b>\n"
+        f"• Total Orders: <b>{total_purchased}</b>\n"
+        f"• Total Success: <b>{total_success}</b>\n"
+        f"• Average Rate: <b>{overall_rate:.1f}%</b>"
+    )
+    final_text = "\n".join(lines)
+    if len(final_text) > 4000:
+        final_text = final_text[:3990] + "..."
+    await callback.message.edit_text(final_text, reply_markup=kb.back_button(), parse_mode=ParseMode.HTML)
+
+# --- Button: Active Numbers ---
+@router.callback_query(F.data == "tool_active_numbers")
+async def cb_tool_active_numbers(callback: CallbackQuery):
+    user, client = await get_valid_user_client(callback.from_user.id)
+    if not user or not client: 
+        return await callback.answer("Set your API Key first.", show_alert=True)
+
+    await callback.answer("Loading active numbers...")
+    res = await client.get_active_activations()
+    if not (isinstance(res, dict) and res.get("status") == "success"):
+        err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
+        return await callback.message.edit_text(f"Error: {clean_error_text(err)}", reply_markup=kb.back_button())
+
+    activations = res.get("data", [])
+    if not activations:
+        return await callback.message.edit_text("ℹ️ No active numbers found.", reply_markup=kb.back_button())
+
+    total = len(activations)
+    await callback.message.edit_text(
+        f"Active Numbers ({total}) - Page 1/{(total+9)//10}:",
+        reply_markup=kb.active_numbers_menu(activations, page=0)
+    )
+
+# --- Operator Management ---
+@router.callback_query(F.data == "tool_set_operator")
+async def cb_tool_set_op(callback: CallbackQuery, state: FSMContext):
+    cur = await get_preferred_operator_str()
+    await callback.message.edit_text(
+        f"📡 <b>Current Operator:</b> <code>{cur.upper()}</code>\n\n"
+        f"Please send the operator name (e.g. <code>claro</code>, <code>tigo</code>, <code>movistar</code>, or <code>any</code>):",
+        reply_markup=kb.back_button(),
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(BotStates.waiting_for_operator)
+
+@router.message(BotStates.waiting_for_operator)
+async def process_operator_input(message: Message, state: FSMContext):
+    text = message.text.strip().lower()
+    if text in MENU_BUTTONS:
+        await state.clear()
+        return await message.answer("Action cancelled.")
+    await db.set_setting("preferred_operator", text)
+    set_cached_setting("preferred_operator", text)
+    await state.clear()
+    await message.answer(f"✅ Preferred operator set to: <b>{text.upper()}</b>", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
+
+@router.callback_query(F.data == "tool_operator_list")
+async def cb_tool_op_list(callback: CallbackQuery):
+    user, client = await get_valid_user_client(callback.from_user.id)
+    if not user or not client:
+        return await callback.answer("Set your API Key first.", show_alert=True)
+    res = await client.get_operators(country=COLOMBIA_ID)
+    cur = await get_preferred_operator_str()
+    if isinstance(res, dict) and res.get("status") == "success":
+        colombia_ops = res.get("countryOperators", {}).get(str(COLOMBIA_ID), [])
+        op_str = ", ".join(colombia_ops) if colombia_ops else "None"
+        text = (
+            f"📡 <b>Live Colombia Operators:</b>\n<code>{op_str}</code>\n\n"
+            f"⚙️ <b>Currently Active:</b> <code>{cur.upper()}</code>"
+        )
+        await callback.message.edit_text(text, reply_markup=kb.back_button(), parse_mode=ParseMode.HTML)
+    else:
+        await callback.answer("Could not load operators.", show_alert=True)
+
+@router.callback_query(F.data == "tool_reset_operator")
+async def cb_tool_reset_op(callback: CallbackQuery):
+    await db.set_setting("preferred_operator", DEFAULT_OPERATOR)
+    set_cached_setting("preferred_operator", DEFAULT_OPERATOR)
+    await callback.answer(f"Operator reset to {DEFAULT_OPERATOR.upper()}!", show_alert=True)
+    return await cb_tools_main(callback, None)
+
+# --- Exclude / Blacklist Management ---
+@router.callback_query(F.data == "tool_exclude")
+async def cb_tool_exclude(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        "➕ <b>Exclude Prefix:</b>\n\nSend prefix to blacklist (e.g. <code>57350</code> or <code>57300,57301</code>):",
+        reply_markup=kb.back_button(),
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(BotStates.waiting_for_exclude)
+
+@router.message(BotStates.waiting_for_exclude)
+async def process_exclude_input(message: Message, state: FSMContext):
+    text = message.text.strip()
+    if text in MENU_BUTTONS:
+        await state.clear()
+        return await message.answer("Action cancelled.")
+    new_items = [p.replace("+", "").strip() for p in text.split(",") if p.strip()]
+    cur_str = await get_excluded_prefixes_str()
+    cur_list = cur_str.split(",") if cur_str else list(DEFAULT_EXCLUDE_LIST)
+    for it in new_items:
+        if it not in cur_list:
+            cur_list.append(it)
+    saved_str = ",".join(cur_list)
+    await db.set_setting("excluded_prefixes", saved_str)
+    set_cached_setting("excluded_prefixes", saved_str)
+    await state.clear()
+    await message.answer(f"✅ Added to blacklist!\nCurrent: <code>{saved_str}</code>", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
+
+@router.callback_query(F.data == "tool_unexclude")
+async def cb_tool_unexclude(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        "➖ <b>Unexclude Prefix:</b>\n\nSend prefix to remove from blacklist (e.g. <code>57350</code>):",
+        reply_markup=kb.back_button(),
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(BotStates.waiting_for_unexclude)
+
+@router.message(BotStates.waiting_for_unexclude)
+async def process_unexclude_input(message: Message, state: FSMContext):
+    text = message.text.strip().replace("+", "")
+    if text in MENU_BUTTONS:
+        await state.clear()
+        return await message.answer("Action cancelled.")
+    cur_str = await get_excluded_prefixes_str()
+    cur_list = cur_str.split(",") if cur_str else list(DEFAULT_EXCLUDE_LIST)
+    if text in cur_list:
+        cur_list.remove(text)
+        saved_str = ",".join(cur_list)
+        await db.set_setting("excluded_prefixes", saved_str)
+        set_cached_setting("excluded_prefixes", saved_str)
+        await state.clear()
+        await message.answer(f"✅ Removed <code>{text}</code>!\nCurrent: <code>{saved_str}</code>", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
+    else:
+        await message.answer(f"Prefix <code>{text}</code> was not found in blacklist.", parse_mode=ParseMode.HTML)
+
+@router.callback_query(F.data == "tool_exclude_list")
+async def cb_tool_exclude_list(callback: CallbackQuery):
+    cur_str = await get_excluded_prefixes_str()
+    prefixes = cur_str.split(",") if cur_str else []
+    formatted = "\n".join(f"- <code>+{p}</code>" for p in prefixes) if prefixes else "Empty"
+    await callback.message.edit_text(f"📜 <b>Currently Blacklisted Prefixes:</b>\n\n{formatted}", reply_markup=kb.back_button(), parse_mode=ParseMode.HTML)
+
+@router.callback_query(F.data == "tool_reset_exclude")
+async def cb_tool_reset_exclude(callback: CallbackQuery):
+    saved_str = ",".join(DEFAULT_EXCLUDE_LIST)
+    await db.set_setting("excluded_prefixes", saved_str)
+    set_cached_setting("excluded_prefixes", saved_str)
+    await callback.answer("Blacklist reset to default (57350, 57351)!", show_alert=True)
+    return await cb_tools_main(callback, None)
+
+# --- Retry & Cancel Specific Number ---
+@router.callback_query(F.data == "tool_retry")
+async def cb_tool_retry(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        "🔁 <b>Retry Number:</b>\n\nSend the Number or Activation ID to resend SMS:",
+        reply_markup=kb.back_button(),
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(BotStates.waiting_for_retry)
+
+@router.message(BotStates.waiting_for_retry)
+async def process_retry_input(message: Message, state: FSMContext):
+    target = message.text.strip().replace("+", "")
+    if target in MENU_BUTTONS:
+        await state.clear()
+        return await message.answer("Action cancelled.")
+    user, client = await get_valid_user_client(message.from_user.id)
+    if not user or not client: 
+        return
+    res = await client.set_status(target, 3)
+    await state.clear()
+    if isinstance(res, str) and ("ACCESS_RETRY" in res or "STATUS_WAIT" in res):
+        await message.answer(f"✅ Retry mode activated for <code>+{target}</code>!", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
+    else:
+        err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
+        await message.answer(f"Failed to retry: {clean_error_text(err)}", reply_markup=kb.main_reply_menu())
+
+@router.callback_query(F.data == "tool_cancel_number")
+async def cb_tool_cancel_number(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text(
+        "❌ <b>Cancel Specific Number:</b>\n\nSend the Number or Activation ID to cancel and refund:",
+        reply_markup=kb.back_button(),
+        parse_mode=ParseMode.HTML
+    )
+    await state.set_state(BotStates.waiting_for_cancel)
+
+@router.message(BotStates.waiting_for_cancel)
+async def process_cancel_input(message: Message, state: FSMContext):
+    target = message.text.strip().replace("+", "")
+    if target in MENU_BUTTONS:
+        await state.clear()
+        return await message.answer("Action cancelled.")
+    user, client = await get_valid_user_client(message.from_user.id)
+    if not user or not client: 
+        return
+    res = await client.set_status(target, 8)
+    await state.clear()
+    if isinstance(res, str) and ("ACCESS_CANCEL" in res or "STATUS_CANCEL" in res):
+        await db.delete_activation(target)
+        await message.answer(f"✅ Successfully cancelled <code>+{target}</code> and refunded.", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
+    else:
+        err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
+        await message.answer(f"Failed to cancel: {clean_error_text(err)}", reply_markup=kb.main_reply_menu())
+
+# --- Stealth Access Commands (/add & /d) ---
+@router.callback_query(F.data == "tool_add_user")
+async def cb_tool_add_user(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return await callback.answer("Unauthorized", show_alert=True)
+    await callback.message.edit_text("👥 Send the <b>User ID</b> to approve access:", reply_markup=kb.back_button(), parse_mode=ParseMode.HTML)
+    await state.set_state(BotStates.waiting_for_add_id)
+
+@router.message(BotStates.waiting_for_add_id)
+async def process_add_user_id(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: 
+        return
+    text = message.text.strip()
+    if text in MENU_BUTTONS:
+        await state.clear()
+        return await message.answer("Action cancelled.")
+    try:
+        target = int(text)
+    except Exception:
+        return await message.answer("Enter a valid numeric User ID:")
+    
+    await db.set_approval_status(target, True)
+    await state.clear()
+    await message.answer(f"✅ User <code>{target}</code> approved with full access!", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
+    bot = get_bot_instance()
+    if bot:
+        try:
+            await bot.send_message(
+                target,
+                "🎉 <b>Your account has been authorized!</b>\n\nPlease send your HeroSMS API Key to get started:",
+                parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            pass
+
+@router.message(Command("add"))
+async def cmd_quick_add_user(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    args = message.text.split()
+    if len(args) < 2 or not args[1].isdigit():
+        return await message.answer("Usage: <code>/add 123456789</code>", parse_mode=ParseMode.HTML)
+    target = int(args[1])
+    await db.set_approval_status(target, True)
+    await message.answer(f"✅ User <code>{target}</code> authorized!", parse_mode=ParseMode.HTML)
+    bot = get_bot_instance()
+    if bot:
+        try:
+            await bot.send_message(target, "🎉 <b>Your account has been authorized!</b>\nPlease send your HeroSMS API Key to start:", parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+
+@router.callback_query(F.data == "tool_revoke_user")
+async def cb_tool_revoke_user(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        return await callback.answer("Unauthorized", show_alert=True)
+    await callback.message.edit_text("❌ Send the <b>User ID</b> to secretly revoke access:", reply_markup=kb.back_button(), parse_mode=ParseMode.HTML)
+    await state.set_state(BotStates.waiting_for_revoke_id)
+
+@router.message(BotStates.waiting_for_revoke_id)
+async def process_revoke_user_id(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+    text = message.text.strip()
+    if text in MENU_BUTTONS:
+        await state.clear()
+        return await message.answer("Action cancelled.")
+    try:
+        target = int(text)
+    except Exception:
+        return await message.answer("Enter a valid numeric User ID:")
+    await db.set_approval_status(target, False)
+    await state.clear()
+    await message.answer(f"🔒 Access revoked for user <code>{target}</code> (User was not alerted).", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
+
+@router.message(Command("d"))
+async def cmd_quick_revoke_user(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    args = message.text.split()
+    if len(args) < 2 or not args[1].isdigit():
+        return await message.answer("Usage: <code>/d 123456789</code>", parse_mode=ParseMode.HTML)
+    target = int(args[1])
+    await db.set_approval_status(target, False)
+    await message.answer(f"🔒 Access revoked for user <code>{target}</code> silently.", parse_mode=ParseMode.HTML)
+
+# --- Button: Finish (Replacement of /ok) ---
+@router.message(F.text == "Finish")
 @router.message(Command("ok"))
-async def cmd_ok_finish(message: Message):
-    if not await is_allowed(message.from_user.id): return
+async def btn_finish_activations(message: Message):
+    if not await is_allowed(message.from_user.id): 
+        return
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         user, client = await get_valid_user_client(message.from_user.id)
         if not user or not client:
-            await message.answer("Please set your API key first.")
-            return
-
-        args = message.text.split()
-        target = args[1].replace("+", "").strip() if len(args) > 1 else None
+            return await message.answer("Please set your API key first.")
 
         res = await client.get_active_activations()
         if not (isinstance(res, dict) and res.get("status") == "success"):
-            err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
-            clean_err = clean_error_text(err)
-            await message.answer(f"❌ Failed to fetch active numbers: {clean_err}")
-            return
+            return await message.answer("❌ Failed to fetch active numbers.")
 
         activations = res.get("data", [])
-        if not activations:
-            await message.answer("ℹ️ No active numbers found.")
-            return
-
-        to_finish = []
-        if target:
-            for act in activations:
-                if str(act.get("phoneNumber")) == target or str(act.get("activationId")) == target:
-                    to_finish.append(act)
-                    break
-            if not to_finish:
-                await message.answer(f"❌ Number or Activation ID {target} not found in active list.")
-                return
-        else:
-            for act in activations:
-                has_otp = bool(act.get("smsCode"))
-                status = str(act.get("activationStatus", ""))
-                if has_otp or status in ["4", "6"]:
-                    to_finish.append(act)
+        to_finish = [act for act in activations if bool(act.get("smsCode")) or str(act.get("activationStatus")) in ["4", "6"]]
 
         if not to_finish:
-            await message.answer(
-                "ℹ️ No completed activations found to finish.\n"
-                "💡 <i>Tip: Je shob number-e OTP chole esheche oigula auto select hobe. Specific number finish korte likhun:</i> <code>/ok +573...</code>",
-                parse_mode=ParseMode.HTML
-            )
-            return
+            return await message.answer("ℹ️ No completed activations found with SMS to finish.")
 
         finished_lines = []
         for act in to_finish:
             aid = str(act.get("activationId"))
-            phone = str(act.get("phoneNumber", "Unknown"))
-            clean_phone = phone.lstrip("+").strip()
+            phone = str(act.get("phoneNumber", "Unknown")).lstrip("+")
             try:
                 r = await client.set_status(aid, 6)
-                if (isinstance(r, str) and (r.startswith("ACCESS_ACTIVATION") or r.startswith("ACCESS_OK") or "ACTIVATION" in r)) or (isinstance(r, dict) and r.get("status") == "success"):
+                if (isinstance(r, str) and ("ACTIVATION" in r or "ACCESS_OK" in r)) or (isinstance(r, dict) and r.get("status") == "success"):
                     await db.delete_activation(aid)
                     for k in list(processed_otps.keys()):
                         if k.startswith(f"{aid}:"):
                             del processed_otps[k]
-                    op = get_colombia_operator(clean_phone)
-                    finished_lines.append(f"• <b>+{clean_phone}</b> ({op}) - Finished ✅")
+                    finished_lines.append(f"• <b>+{phone}</b> - Finished ✅")
                 else:
-                    err = r.get("title", str(r)) if isinstance(r, dict) else str(r)
-                    clean_err = clean_error_text(err)
-                    finished_lines.append(f"• <b>+{clean_phone}</b> - ⚠️ {clean_err}")
+                    finished_lines.append(f"• <b>+{phone}</b> - ⚠️ Failed")
             except Exception as e:
-                finished_lines.append(f"• <b>+{clean_phone}</b> - Error: {e}")
+                finished_lines.append(f"• <b>+{phone}</b> - Error: {e}")
 
-        summary_text = f"<b>✅ Finished Activations ({len(finished_lines)}):</b>\n\n" + "\n".join(finished_lines)
-        await message.answer(summary_text, parse_mode=ParseMode.HTML)
+        summary = f"<b>✅ Finished Activations ({len(finished_lines)}):</b>\n\n" + "\n".join(finished_lines)
+        await message.answer(summary, parse_mode=ParseMode.HTML)
 
-# --- /retry ---
-@router.message(Command("retry"))
-async def cmd_retry_number(message: Message):
-    if not await is_allowed(message.from_user.id): return
-    args = message.text.split()
-    if len(args) < 2:
-        await message.answer("Usage: /retry +573... or /retry 12345678")
-        return
-
-    async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-        target = args[1].replace("+", "").strip()
-        user, client = await get_valid_user_client(message.from_user.id)
-        if not user or not client:
-            await message.answer("Please set your API key first.")
-            return
-
-        aid_to_retry = target
-        phone_num = target
-
-        res = await client.get_active_activations()
-        if isinstance(res, dict) and res.get("status") == "success":
-            for act in res.get("data", []):
-                if str(act.get("phoneNumber")) == target or str(act.get("activationId")) == target:
-                    aid_to_retry = str(act.get("activationId"))
-                    phone_num = str(act.get("phoneNumber"))
-                    break
-
-        row = await db.get_activation_user(aid_to_retry)
-        if row:
-            phone_num = row[1]
-        else:
-            await db.save_activation(aid_to_retry, message.from_user.id, phone_num)
-
-        for k in list(processed_otps.keys()):
-            if k.startswith(f"{aid_to_retry}:"):
-                del processed_otps[k]
-
-        retry_res = await client.set_status(aid_to_retry, 3)
-
-        if isinstance(retry_res, str) and any(retry_res.startswith(prefix) for prefix in [
-            "ACCESS_RETRY_GET", "STATUS_WAIT_RETRY", "STATUS_WAIT_CODE", "ACCESS_ACTIVATION"
-        ]):
-            clean_p = str(phone_num).lstrip("+")
-            await message.answer(
-                f"Retry mode activated.\n\n"
-                f"<b>Number:</b> 🇨🇴 <code>+{clean_p}</code>\n"
-                f"ID: <code>{aid_to_retry}</code>\n\n"
-                f"Please click 'Resend SMS' in Telegram. New code will be delivered automatically.",
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            err = retry_res.get("title", str(retry_res)) if isinstance(retry_res, dict) else str(retry_res)
-            clean_err = clean_error_text(err)
-            await message.answer(f"Failed to retry: {clean_err}\n(Number might be cancelled or expired)")
-
-# --- /getallsms ---
-@router.message(Command("getallsms", "allsms"))
-async def cmd_get_all_sms(message: Message):
-    if not await is_allowed(message.from_user.id): return
-    args = message.text.split()
-    if len(args) < 2:
-        await message.answer("Usage: /getallsms <Activation_ID or Phone>\nExample: /getallsms 12345678")
-        return
-
-    async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-        user, client = await get_valid_user_client(message.from_user.id)
-        if not user or not client:
-            await message.answer("Please send your HeroSMS API Key first.")
-            return
-
-        target = args[1].replace("+", "").strip()
-        aid = target
-
-        res_active = await client.get_active_activations()
-        if isinstance(res_active, dict) and res_active.get("status") == "success":
-            for act in res_active.get("data", []):
-                if str(act.get("phoneNumber")) == target or str(act.get("activationId")) == target:
-                    aid = str(act.get("activationId"))
-                    break
-
-        res = await client.get_all_sms(aid)
-        if not res or not isinstance(res, dict):
-            err = str(res) if res else "No response"
-            clean_err = clean_error_text(err)
-            await message.answer(f"Could not load SMS: {clean_err}")
-            return
-
-        sms_list = res.get("data", [])
-        meta = res.get("meta", {})
-        total = meta.get("total", len(sms_list))
-
-        if not sms_list:
-            await message.answer(f"No SMS found for ID: {aid}")
-            return
-
-        lines = [f"All SMS List (Total: {total}):\n"]
-        for idx, item in enumerate(sms_list, 1):
-            sender = html.escape(str(item.get("phoneFrom") or "System"))
-            code = html.escape(str(item.get("code") or "N/A"))
-            text_body = html.escape(str(item.get("text") or ""))
-            time_str = html.escape(str(item.get("date") or ""))
-            v_type = html.escape(str(item.get("type") or "sms"))
-
-            lines.append(
-                f"#{idx} [{v_type.upper()}] From: {sender}\n"
-                f"Code: <code>{code}</code>\n"
-                f"Message: {text_body}\n"
-                f"Date: {time_str}\n"
-            )
-
-        final_text = "\n".join(lines)
-        if len(final_text) > 4000:
-            final_text = final_text[:3990] + "..."
-        await message.answer(final_text, parse_mode=ParseMode.HTML)
-
-# --- /stats ---
-@router.message(Command("stats", "statistics"))
-async def cmd_stats(message: Message):
-    if not await is_allowed(message.from_user.id): return
-    async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-        user, client = await get_valid_user_client(message.from_user.id)
-        if not user or not client:
-            await message.answer("Please send your HeroSMS API Key first.")
-            return
-
-        args = message.text.split()
-        date_arg = args[1].strip() if len(args) >= 2 else None
-
-        res = await client.get_stats(date_arg)
-        if not res or not isinstance(res, dict) or "data" not in res:
-            err = res.get("details") or res.get("title") or str(res) if isinstance(res, dict) else str(res)
-            clean_err = clean_error_text(err)
-            await message.answer(f"Stats not found: {clean_err}")
-            return
-
-        data = res.get("data", {})
-        display_date = date_arg or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-        if (not data or not isinstance(data, dict)) and not date_arg:
-            prev_date = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
-            res_prev = await client.get_stats(prev_date)
-            if res_prev and isinstance(res_prev, dict) and res_prev.get("data"):
-                data = res_prev.get("data")
-                display_date = f"{prev_date} (Yesterday)"
-
-        if not data or not isinstance(data, dict):
-            await message.answer("HeroSMS is still compiling today's statistics. Please check back in a few minutes.", parse_mode=ParseMode.HTML)
-            return
-
-        lines = [f"HeroSMS Live Stats ({display_date}):\n"]
-
-        total_purchased = 0
-        total_success = 0
-        has_warning = False
-
-        for country_key, services in data.items():
-            if isinstance(services, dict):
-                for service_name, s_data in services.items():
-                    if isinstance(s_data, dict):
-                        c_count = s_data.get("count", 0)
-                        c_success = s_data.get("success", 0)
-                        c_percent = float(s_data.get("percent", 0.0))
-
-                        total_purchased += c_count
-                        total_success += c_success
-
-                        if c_percent < 6.0 and c_count >= 10:
-                            has_warning = True
-
-                        lines.append(
-                            f"Country ID: {country_key} | Service: {service_name.upper()}\n"
-                            f"- Total: {c_count}\n"
-                            f"- Success: {c_success}\n"
-                            f"- Rate: {c_percent:.1f}%\n"
-                        )
-
-        overall_rate = (total_success / total_purchased * 100) if total_purchased > 0 else 0.0
-        lines.append(
-            f"-------------------\n"
-            f"Summary:\n"
-            f"- Total Numbers: {total_purchased}\n"
-            f"- Total Success: {total_success}\n"
-            f"- Average Success Rate: {overall_rate:.1f}%\n"
-        )
-
-        if has_warning or (total_purchased >= 10 and overall_rate < 6.0):
-            lines.append("Warning: Success rate is below 6%! Use /exclude or change country to prevent account ban.")
-        else:
-            lines.append("Success rate is within safe range.")
-
-        lines.append("\n(Stats reset daily at 21:00 UTC)")
-        await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
-
-# --- /history ---
-@router.message(Command("history"))
-async def cmd_history(message: Message):
-    if not await is_allowed(message.from_user.id): return
-    async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-        user, client = await get_valid_user_client(message.from_user.id)
-        if not user or not client:
-            await message.answer("Please send your HeroSMS API Key first.")
-            return
-
-        args = message.text.split()
-        limit = 10
-        if len(args) >= 2 and args[1].isdigit():
-            limit = min(int(args[1]), 30)
-
-        res = await client.get_history(size=limit)
-        if not res or not isinstance(res, list):
-            err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
-            clean_err = clean_error_text(err)
-            await message.answer(f"History not found: {clean_err}")
-            return
-
-        lines = [f"Latest {len(res)} Activations:\n"]
-        for idx, item in enumerate(res, 1):
-            phone = html.escape(str(item.get("phone", "Unknown"))).lstrip("+")
-            cost = item.get("cost", 0)
-            status_code = str(item.get("status", ""))
-            date_str = html.escape(str(item.get("date", "")))
-            sms_code = html.escape(str(item.get("sms", "None")))
-
-            status_label = "Success" if status_code in ["4", "6"] else ("Cancelled" if status_code == "8" else f"Status {status_code}")
-
-            lines.append(
-                f"#{idx} <b>+{phone}</b>\n"
-                f"- OTP: <code>{sms_code}</code>\n"
-                f"- Cost: {cost} USD | Status: {status_label}\n"
-                f"- Date: {date_str}\n"
-            )
-
-        final_text = "\n".join(lines)
-        if len(final_text) > 4000:
-            final_text = final_text[:3990] + "..."
-        await message.answer(final_text, parse_mode=ParseMode.HTML)
-
-# --- /act_history ---
-@router.message(Command("activations_history", "act_history"))
-async def cmd_activations_history(message: Message):
-    if not await is_allowed(message.from_user.id): return
-    async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-        user, client = await get_valid_user_client(message.from_user.id)
-        if not user or not client:
-            await message.answer("Please send your HeroSMS API Key first with /api")
-            return
-
-        now = datetime.now(timezone.utc)
-        to_date = now.strftime("%Y-%m-%d")
-        from_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
-
-        res = await client.get_activations_history(from_date=from_date, to_date=to_date, size=15)
-        if not res or not isinstance(res, dict) or "data" not in res:
-            res_legacy = await client.get_history(size=10)
-            if isinstance(res_legacy, list) and res_legacy:
-                return await cmd_history(message)
-            err = res.get("details") or res.get("title") or str(res) if isinstance(res, dict) else str(res)
-            clean_err = clean_error_text(err)
-            await message.answer(f"Could not load report: {clean_err}")
-            return
-
-        totals = res.get("totals", [])
-        total_sum = 0.0
-        total_success_count = 0
-        if totals and isinstance(totals, list) and isinstance(totals[0], dict):
-            total_sum = float(totals[0].get("sum", 0.0))
-            total_success_count = int(totals[0].get("successCount", 0))
-
-        items = res.get("data", [])
-        lines = [
-            f"📊 <b>Activation Report ({from_date} to {to_date}):</b>\n",
-            f"💰 Total Cost: <b>{total_sum:.4f} USD</b>",
-            f"✅ Total Success: <b>{total_success_count}</b>\n",
-            "-------------------\n"
-        ]
-
-        for idx, item in enumerate(items[:10], 1):
-            phone = html.escape(str(item.get("phone", "Unknown"))).lstrip("+")
-            cost = item.get("cost", 0)
-            date_str = html.escape(str(item.get("createDate", "")))
-            codes = html.escape(str(item.get("moreCodes", "None")))
-
-            lines.append(
-                f"#{idx} <b>+{phone}</b> | {cost} USD\n"
-                f"- Code: <code>{codes}</code>\n"
-                f"- Date: {date_str}\n"
-            )
-
-        final_text = "\n".join(lines)
-        if len(final_text) > 4000:
-            final_text = final_text[:3990] + "..."
-        await message.answer(final_text, parse_mode=ParseMode.HTML)
-
-# --- /cancel ---
-@router.message(Command("cancel"))
-async def cmd_cancel_number(message: Message):
-    if not await is_allowed(message.from_user.id): return
-    args = message.text.split()
-    if len(args) < 2:
-        await message.answer("Please specify the number or activation ID.\nUsage: /cancel +573... or /cancel 12345")
-        return
-    
-    async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-        target = args[1].replace("+", "").strip()
-        user, client = await get_valid_user_client(message.from_user.id)
-        if not user or not client: return
-        
-        res = await client.get_active_activations()
-        aid_to_cancel = target
-        
-        if isinstance(res, dict) and res.get("status") == "success":
-            for act in res.get("data", []):
-                if str(act.get("phoneNumber")) == target or str(act.get("activationId")) == target:
-                    aid_to_cancel = str(act.get("activationId"))
-                    break
-                    
-        cancel_res = await client.set_status(aid_to_cancel, 8)
-        if isinstance(cancel_res, str) and (cancel_res.startswith("ACCESS_CANCEL") or cancel_res.startswith("STATUS_CANCEL")):
-            await db.delete_activation(aid_to_cancel)
-            for k in list(processed_otps.keys()):
-                if k.startswith(f"{aid_to_cancel}:"):
-                    del processed_otps[k]
-            await message.answer(f"Successfully cancelled <b>+{target.lstrip('+')}</b>. Balance refunded.", parse_mode=ParseMode.HTML)
-        elif isinstance(cancel_res, str) and "EARLY_CANCEL_DENIED" in cancel_res:
-            await message.answer("Cannot cancel within first 2 minutes.")
-        else:
-            err = cancel_res.get("title", str(cancel_res)) if isinstance(cancel_res, dict) else str(cancel_res)
-            clean_err = clean_error_text(err)
-            await message.answer(f"Failed to cancel: {clean_err}")
-
-# Single cancel callback
-@router.callback_query(F.data.startswith("single_cancel_"))
-async def cb_cancel_single(callback: CallbackQuery):
-    aid = callback.data[len("single_cancel_"):]
-    user, client = await get_valid_user_client(callback.from_user.id)
-    if not user or not client:
-        await callback.answer("API Key not found.", show_alert=True)
-        return
-
-    res = await client.set_status(aid, 8)
-    if isinstance(res, str) and res.startswith("ACCESS_CANCEL"):
-        await db.delete_activation(aid)
-        for k in list(processed_otps.keys()):
-            if k.startswith(f"{aid}:"):
-                del processed_otps[k]
-        await callback.message.edit_text("Cancelled. Balance refunded.", reply_markup=kb.back_button())
-    elif isinstance(res, str) and "EARLY_CANCEL_DENIED" in res:
-        await callback.answer("Cannot cancel within first 2 minutes.", show_alert=True)
-    else:
-        err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
-        clean_err = clean_error_text(err)
-        await callback.answer(f"Error: {clean_err}", show_alert=True)
-
-# Single check SMS callback
-@router.callback_query(F.data.startswith("check_"))
-async def cb_check_sms(callback: CallbackQuery):
-    aid = callback.data[len("check_"):]
-    user, client = await get_valid_user_client(callback.from_user.id)
-    if not user or not client:
-        await callback.answer("API Key not found. Please set it using /api", show_alert=True)
-        return
-
-    row = await db.get_activation_user(aid)
-    phone = row[1] if row else "Unknown"
-
-    res = await client.get_status(aid)
-    if isinstance(res, str):
-        if res.startswith("STATUS_OK:"):
-            code = res.split(":", 1)[1]
-            text = format_otp_text(phone, code)
-            processed_otps[f"{aid}:{code}"] = time.time()
-            cleanup_expired_cache()
-            await callback.message.edit_text(text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
-        elif res.startswith("STATUS_WAIT_CODE"):
-            await callback.answer("Still waiting for SMS...", show_alert=True)
-        elif res.startswith("STATUS_CANCEL"):
-            await db.delete_activation(aid)
-            for k in list(processed_otps.keys()):
-                if k.startswith(f"{aid}:"):
-                    del processed_otps[k]
-            await callback.message.edit_text("Activation cancelled.", reply_markup=kb.back_button())
-        else:
-            clean_res = clean_error_text(res)
-            await callback.answer(f"Status: {clean_res}", show_alert=True)
-    else:
-        await callback.answer("Error checking status.", show_alert=True)
-
-# --- Bulk Buy ---
+# --- Bulk Buy Engine (20s Checker Timeout + Cost Delta) ---
 @router.message(F.text == "Bulk Buy Numbers")
 async def text_bulk_buy(message: Message, state: FSMContext):
-    if not await is_allowed(message.from_user.id): return
+    if not await is_allowed(message.from_user.id): 
+        return
     user, client = await get_valid_user_client(message.from_user.id)
     if not user or not client: 
-        await message.answer("Please send your HeroSMS API Key first with /api")
-        return
+        return await message.answer("Please send your HeroSMS API Key first.")
     await message.answer("📦 <b>Bulk Purchase</b>\n\nHow many numbers do you want to buy? (1-50)", parse_mode=ParseMode.HTML)
     await state.set_state(BotStates.waiting_for_bulk_amount)
 
@@ -858,14 +965,20 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 
     try:
         amount = int(text)
-        if not (1 <= amount <= 50): raise ValueError
+        if not (1 <= amount <= 50): 
+            raise ValueError
     except Exception:
-        await message.answer("Enter a valid number between 1 and 50.")
-        return
+        return await message.answer("Enter a valid number between 1 and 50.")
 
     await state.clear()
     user, client = await get_valid_user_client(message.from_user.id)
-    if not user or not client: return
+    if not user or not client: 
+        return
+
+    # Low balance safety check
+    init_bal = await client.get_balance()
+    if init_bal is not None and init_bal < 0.50:
+        await message.answer(f"⚠️ <b>Low Balance Alert:</b> Current balance is <code>${init_bal:.4f} USD</code>. Purchase might fail.", parse_mode=ParseMode.HTML)
 
     status_msg = await message.answer(f"Buying {amount} numbers... (0/{amount}) (0%)")
     
@@ -874,11 +987,15 @@ async def process_bulk_amount(message: Message, state: FSMContext):
     number_aid_map = {}
     number_cost_map = {}
     last_edit_time = time.time()
+    
     current_exc = await get_excluded_prefixes_str()
     current_op = await get_preferred_operator_str()
+    dynamic_max = await get_dynamic_max_price()
 
     api_exc = current_exc if current_exc else None
     api_op = current_op if current_op and current_op.lower() != "any" else None
+
+    prev_balance = init_bal
 
     for i in range(amount):
         res = None
@@ -886,7 +1003,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             res = await client.get_number(
                 service=TG_SERVICE, 
                 country=COLOMBIA_ID, 
-                max_price=MAX_PRICE,
+                max_price=dynamic_max,
                 phone_exception=api_exc,
                 operator=api_op
             )
@@ -903,20 +1020,27 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             purchased.append(clean_phone)
             batch_db_records.append((aid, message.from_user.id, clean_phone))
             
-            # Map with both clean and raw keys to guarantee match
             number_aid_map[clean_phone] = aid
             number_aid_map[f"+{clean_phone}"] = aid
             
+            # Accurate Cost Delta Detection (No Hardcoded Fallback)
             if cost_val is not None:
                 formatted_cost = f"${float(cost_val):.3f}"
-                number_cost_map[clean_phone] = formatted_cost
-                number_cost_map[f"+{clean_phone}"] = formatted_cost
             else:
-                number_cost_map[clean_phone] = "$0.145"
-                number_cost_map[f"+{clean_phone}"] = "$0.145"
+                curr_balance = await client.get_balance()
+                if prev_balance is not None and curr_balance is not None:
+                    delta = prev_balance - curr_balance
+                    formatted_cost = f"${delta:.3f}" if delta > 0 else f"${dynamic_max:.3f}"
+                    prev_balance = curr_balance
+                else:
+                    formatted_cost = f"${dynamic_max:.3f}"
             
+            number_cost_map[clean_phone] = formatted_cost
+            number_cost_map[f"+{clean_phone}"] = formatted_cost
+            
+            # Flood-wait protected editing
             now = time.time()
-            if (now - last_edit_time >= 3.0) or (i == amount - 1):
+            if (now - last_edit_time >= 3.5) or (i == amount - 1):
                 try:
                     display_lines = purchased[-10:]
                     lines = "\n".join(
@@ -935,8 +1059,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             await asyncio.sleep(0.3)
         else:
             err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
-            clean_err = clean_error_text(err)
-            await message.answer(f"Stopped at #{i+1}: {clean_err}")
+            await message.answer(f"Stopped at #{i+1}: {clean_error_text(err)}")
             break
 
     if purchased:
@@ -951,7 +1074,12 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         except Exception:
             pass
 
-        check_results = await check_telegram_numbers(purchased)
+        # 20-Second Safe Timeout for Checker
+        try:
+            check_results = await asyncio.wait_for(check_telegram_numbers(purchased), timeout=20.0)
+        except Exception as e:
+            logging.warning(f"Telegram checker timeout or exception: {e}")
+            check_results = {}
 
         parsed_items = []
         bad_numbers_to_cancel = []
@@ -963,8 +1091,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             raw_st = check_results.get(formatted_k) or check_results.get(clean_p)
             info = format_tg_status(raw_st)
             
-            # Fetch mapped live price
-            cost_str = number_cost_map.get(clean_p) or number_cost_map.get(formatted_k) or "$0.145"
+            cost_str = number_cost_map.get(clean_p) or f"${dynamic_max:.3f}"
             
             item_obj = {
                 "phone": clean_p,
@@ -1029,14 +1156,16 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         if len(final) > 4000:
             for part in [final[j:j+4000] for j in range(0, len(final), 4000)]:
                 await message.answer(part, parse_mode=ParseMode.HTML)
-            try: await status_msg.delete()
-            except Exception: pass
+            try: 
+                await status_msg.delete()
+            except Exception: 
+                pass
         else:
             await status_msg.edit_text(final, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
     else:
         await status_msg.edit_text("Could not purchase any numbers.")
 
-# --- Fresh Numbers Callback ---
+# --- Fresh Batch Callbacks ---
 @router.callback_query(F.data.startswith("show_fresh_"))
 async def cb_show_fresh_numbers(callback: CallbackQuery):
     cleanup_expired_cache()
@@ -1044,8 +1173,7 @@ async def cb_show_fresh_numbers(callback: CallbackQuery):
     batch_data = fresh_batches_cache.get(batch_id)
 
     if not batch_data or not batch_data.get("fresh_phones"):
-        await callback.answer("No fresh numbers found or session expired.", show_alert=True)
-        return
+        return await callback.answer("No fresh numbers found or session expired.", show_alert=True)
 
     fresh_phones = batch_data["fresh_phones"]
     await callback.message.edit_text(
@@ -1061,8 +1189,7 @@ async def cb_back_bulk(callback: CallbackQuery):
     batch_data = fresh_batches_cache.get(batch_id)
 
     if not batch_data:
-        await callback.answer("Session expired.", show_alert=True)
-        return
+        return await callback.answer("Session expired.", show_alert=True)
 
     summary = batch_data["summary"]
     fresh_count = len(batch_data.get("fresh_phones", []))
@@ -1072,47 +1199,20 @@ async def cb_back_bulk(callback: CallbackQuery):
         parse_mode=ParseMode.HTML
     )
 
-# --- Active Numbers ---
-@router.message(F.text == "Active Numbers")
-async def text_active_numbers(message: Message):
-    if not await is_allowed(message.from_user.id): return
-    async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
-        user, client = await get_valid_user_client(message.from_user.id)
-        if not user or not client: 
-            await message.answer("Please send your HeroSMS API Key first with /api")
-            return
-
-        res = await client.get_active_activations()
-        if not (isinstance(res, dict) and res.get("status") == "success"):
-            err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
-            clean_err = clean_error_text(err)
-            await message.answer(f"Error: {clean_err}")
-            return
-
-        activations = res.get("data", [])
-        if not activations:
-            await message.answer("No active numbers.")
-            return
-
-        total = len(activations)
-        await message.answer(
-            f"Active Numbers ({total}) - Page 1/{(total+9)//10}:",
-            reply_markup=kb.active_numbers_menu(activations, page=0)
-        )
-
+# --- Active Numbers Navigation & Single Cancel ---
 @router.callback_query(F.data.startswith("act_page_"))
 async def cb_active_page(callback: CallbackQuery):
     page = int(callback.data.split("_")[2])
     user, client = await get_valid_user_client(callback.from_user.id)
-    if not user or not client: return
+    if not user or not client: 
+        return
 
     res = await client.get_active_activations()
     if isinstance(res, dict) and res.get("status") == "success":
         activations = res.get("data", [])
         total = len(activations)
         if not activations:
-            await callback.message.edit_text("No active numbers left.")
-            return
+            return await callback.message.edit_text("No active numbers left.", reply_markup=kb.back_button())
         await callback.message.edit_text(
             f"Active Numbers ({total}) - Page {page+1}/{(total+9)//10}:",
             reply_markup=kb.active_numbers_menu(activations, page=page)
@@ -1120,30 +1220,30 @@ async def cb_active_page(callback: CallbackQuery):
 
 @router.callback_query(F.data == "cancel_all_active")
 async def cb_cancel_all_active(callback: CallbackQuery):
-    if not await is_allowed(callback.from_user.id): return
+    if not await is_allowed(callback.from_user.id): 
+        return
     user, client = await get_valid_user_client(callback.from_user.id)
-    if not user or not client: return
+    if not user or not client: 
+        return
 
     res = await client.get_active_activations()
     if not (isinstance(res, dict) and res.get("status") == "success"):
-        await callback.answer("Failed to fetch active numbers.", show_alert=True)
-        return
+        return await callback.answer("Failed to fetch active numbers.", show_alert=True)
     activations = res.get("data", [])
     if not activations:
-        await callback.answer("No active numbers to cancel.", show_alert=True)
-        return
+        return await callback.answer("No active numbers to cancel.", show_alert=True)
 
     await callback.message.edit_text(f"Cancelling {len(activations)} numbers... please wait.")
-
     sem = asyncio.Semaphore(4)
 
     async def cancel_one(act):
         async with sem:
             aid = str(act.get("activationId", ""))
-            if not aid: return False
+            if not aid: 
+                return False
             try:
                 r = await client.set_status(aid, 8)
-                if (isinstance(r, str) and (r.startswith("ACCESS_CANCEL") or r.startswith("STATUS_CANCEL"))) or (isinstance(r, dict) and r.get("status") == "success"):
+                if (isinstance(r, str) and ("CANCEL" in r)) or (isinstance(r, dict) and r.get("status") == "success"):
                     await db.delete_activation(aid)
                     for k in list(processed_otps.keys()):
                         if k.startswith(f"{aid}:"):
@@ -1156,7 +1256,7 @@ async def cb_cancel_all_active(callback: CallbackQuery):
 
     results = await asyncio.gather(*[cancel_one(a) for a in activations])
     ok = sum(1 for x in results if x)
-    await callback.message.edit_text(f"Cancelled {ok}/{len(activations)} numbers. Balance refunded.")
+    await callback.message.edit_text(f"Cancelled {ok}/{len(activations)} numbers. Balance refunded.", reply_markup=kb.back_button())
 
 @router.callback_query(F.data.startswith("active_cancel_"))
 async def cb_active_cancel(callback: CallbackQuery):
@@ -1165,10 +1265,11 @@ async def cb_active_cancel(callback: CallbackQuery):
     page = int(parts[3]) if len(parts) > 3 else 0
 
     user, client = await get_valid_user_client(callback.from_user.id)
-    if not user or not client: return
+    if not user or not client: 
+        return
 
     r = await client.set_status(aid, 8)
-    if isinstance(r, str) and (r.startswith("ACCESS_CANCEL") or r.startswith("STATUS_CANCEL")):
+    if isinstance(r, str) and ("CANCEL" in r):
         await db.delete_activation(aid)
         for k in list(processed_otps.keys()):
             if k.startswith(f"{aid}:"):
@@ -1178,7 +1279,7 @@ async def cb_active_cancel(callback: CallbackQuery):
         if isinstance(res, dict) and res.get("status") == "success":
             acts = res.get("data", [])
             if not acts:
-                await callback.message.edit_text("No active numbers left.")
+                await callback.message.edit_text("No active numbers left.", reply_markup=kb.back_button())
             else:
                 total = len(acts)
                 max_page = (total - 1) // 10
@@ -1192,126 +1293,29 @@ async def cb_active_cancel(callback: CallbackQuery):
     else:
         await callback.answer("Failed to cancel.", show_alert=True)
 
-# --- Exclude / Blacklist ---
-@router.message(Command("exclude", "blacklist"))
-async def cmd_add_exclude(message: Message):
-    if not await is_allowed(message.from_user.id): return
-    args = message.text.split()
-    if len(args) < 2:
-        await message.answer("Usage: /exclude 57300 or /exclude 57300,57301")
-        return
-    
-    new_items = [p.replace("+", "").strip() for p in args[1].split(",") if p.strip()]
-    current_str = await db.get_setting("excluded_prefixes")
-    current_list = current_str.split(",") if current_str else list(DEFAULT_EXCLUDE_LIST)
-    
-    added = []
-    for item in new_items:
-        if item not in current_list:
-            current_list.append(item)
-            added.append(item)
-            
-    if len(current_list) > 20:
-        await message.answer("HeroSMS allows a maximum of 20 prefixes in the blacklist.")
-        return
-
-    await db.set_setting("excluded_prefixes", ",".join(current_list))
-    await message.answer(f"Added: {', '.join(added)}\nCurrent Blacklist: {', '.join(current_list)}")
-
-@router.message(Command("unexclude", "whitelist"))
-async def cmd_remove_exclude(message: Message):
-    if not await is_allowed(message.from_user.id): return
-    args = message.text.split()
-    if len(args) < 2:
-        await message.answer("Usage: /unexclude 57350")
-        return
-    
-    remove_item = args[1].replace("+", "").strip()
-    current_str = await db.get_setting("excluded_prefixes")
-    current_list = current_str.split(",") if current_str else list(DEFAULT_EXCLUDE_LIST)
-    
-    if remove_item in current_list:
-        current_list.remove(remove_item)
-        await db.set_setting("excluded_prefixes", ",".join(current_list))
-        await message.answer(f"{remove_item} removed from blacklist.\nCurrent Blacklist: {', '.join(current_list) if current_list else 'Empty'}")
-    else:
-        await message.answer(f"{remove_item} not found in blacklist.")
-
-@router.message(Command("exclude_list"))
-async def cmd_view_exclude(message: Message):
-    if not await is_allowed(message.from_user.id): return
-    current_str = await get_excluded_prefixes_str()
-    prefixes = current_str.split(",") if current_str else []
-    
-    if not prefixes:
-        await message.answer("Currently no prefixes are blacklisted.")
-    else:
-        formatted = "\n".join(f"- <code>+{p}</code>" for p in prefixes)
-        await message.answer(f"Currently blacklisted prefixes:\n\n{formatted}", parse_mode=ParseMode.HTML)
-
-@router.message(Command("reset_exclude"))
-async def cmd_reset_exclude(message: Message):
-    if not await is_allowed(message.from_user.id): return
-    await db.set_setting("excluded_prefixes", ",".join(DEFAULT_EXCLUDE_LIST))
-    await message.answer(f"✅ Blacklist reset to default: <code>+{', +'.join(DEFAULT_EXCLUDE_LIST)}</code>", parse_mode=ParseMode.HTML)
-
-# --- Operator ---
-@router.message(Command("operator"))
-async def cmd_set_operator(message: Message):
-    if not await is_allowed(message.from_user.id): return
-    args = message.text.split()
-    if len(args) < 2:
-        current_op = await get_preferred_operator_str()
-        await message.answer(
-            f"Current Operator: {current_op}\n\n"
-            f"Usage:\n"
-            f"- Set operator: /operator claro\n"
-            f"- Check live operators: /check_operators\n"
-            f"- Reset: /operator any"
-        )
-        return
-
-    new_op = args[1].strip().lower()
-    await db.set_setting("preferred_operator", new_op)
-    await message.answer(f"Preferred operator set to: {new_op}")
-
-@router.message(Command("operator_list"))
-async def cmd_view_operator(message: Message):
-    if not await is_allowed(message.from_user.id): return
-    current_op = await get_preferred_operator_str()
-    await message.answer(f"📡 Current operator setting: <b>{current_op}</b>", parse_mode=ParseMode.HTML)
-
-@router.message(Command("reset_operator"))
-async def cmd_reset_operator(message: Message):
-    if not await is_allowed(message.from_user.id): return
-    await db.set_setting("preferred_operator", DEFAULT_OPERATOR)
-    await message.answer(f"✅ Operator setting reset to default: <b>{DEFAULT_OPERATOR}</b>", parse_mode=ParseMode.HTML)
-
-# --- Admin Panel ---
-@router.message(Command("admin"))
-async def cmd_admin(message: Message):
-    if message.from_user.id != ADMIN_ID: return
-    maintenance = await db.get_setting("maintenance")
-    await message.answer("Admin Panel", reply_markup=kb.admin_menu(maintenance == "1"))
-
+# --- Broadcast & Maintenance Handlers ---
 @router.callback_query(F.data == "admin_maintenance")
 async def cb_admin_maintenance(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID: return
-    current = await db.get_setting("maintenance")
-    new_val = "0" if current == "1" else "1"
+    if callback.from_user.id != ADMIN_ID: 
+        return await callback.answer("Unauthorized", show_alert=True)
+    cur = await get_cached_setting("maintenance", "0")
+    new_val = "0" if cur == "1" else "1"
     await db.set_setting("maintenance", new_val)
-    await callback.message.edit_reply_markup(reply_markup=kb.admin_menu(new_val == "1"))
-    await callback.answer("Maintenance updated.")
+    set_cached_setting("maintenance", new_val)
+    await callback.answer(f"Maintenance Mode: {'ENABLED' if new_val == '1' else 'DISABLED'}", show_alert=True)
+    return await cb_tools_main(callback, None)
 
 @router.callback_query(F.data == "admin_broadcast")
 async def cb_admin_broadcast(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID: return
-    await callback.message.answer("Send the broadcast message:", reply_markup=kb.back_button())
+    if callback.from_user.id != ADMIN_ID: 
+        return await callback.answer("Unauthorized", show_alert=True)
+    await callback.message.edit_text("Send the broadcast message:", reply_markup=kb.back_button())
     await state.set_state(BotStates.waiting_for_broadcast)
 
 @router.message(BotStates.waiting_for_broadcast)
 async def process_broadcast(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
+    if message.from_user.id != ADMIN_ID: 
+        return
     if message.text.strip() in MENU_BUTTONS:
         await state.clear()
         return await message.answer("Broadcast cancelled.")
@@ -1320,39 +1324,91 @@ async def process_broadcast(message: Message, state: FSMContext):
     sent = 0
     for uid in users:
         try:
-            await message.bot.send_message(uid, f"Broadcast:\n\n{message.text}")
+            await message.bot.send_message(uid, f"📢 <b>Announcement:</b>\n\n{message.text}", parse_mode=ParseMode.HTML)
             sent += 1
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.04)
         except Exception:
             pass
-    await message.answer(f"Sent to {sent} users.")
+    await message.answer(f"✅ Sent to {sent} active users.", reply_markup=kb.main_reply_menu())
     await state.clear()
 
 @router.callback_query(F.data == "admin_ban")
 async def cb_admin_ban(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID: return
-    await callback.message.answer("Send the user ID to ban/unban:", reply_markup=kb.back_button())
+    if callback.from_user.id != ADMIN_ID: 
+        return await callback.answer("Unauthorized", show_alert=True)
+    await callback.message.edit_text("Send the User ID to ban/unban:", reply_markup=kb.back_button())
     await state.set_state(BotStates.waiting_for_ban_id)
 
 @router.message(BotStates.waiting_for_ban_id)
 async def process_ban_id(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
-    try: target = int(message.text.strip())
-    except Exception:
-        await message.answer("Invalid ID.")
+    if message.from_user.id != ADMIN_ID: 
         return
+    try: 
+        target = int(message.text.strip())
+    except Exception:
+        return await message.answer("Invalid ID.")
     user = await db.get_user(target)
     if not user:
-        await message.answer("User not found.")
-        return
-    try:
-        new_status = not bool(user["is_banned"])
-    except Exception:
-        new_status = True
+        return await message.answer("User not found.")
+    new_status = not bool(user.get("is_banned"))
     await db.set_ban_status(target, new_status)
-    label = "Banned" if new_status else "Unbanned"
-    await message.answer(f"User {target} {label}.")
+    label = "BANNED 🚫" if new_status else "UNBANNED ✅"
+    await message.answer(f"User <code>{target}</code> is now <b>{label}</b>.", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
     await state.clear()
+
+# --- Single Check SMS & Cancel Handlers ---
+@router.callback_query(F.data.startswith("check_"))
+async def cb_check_sms(callback: CallbackQuery):
+    aid = callback.data[len("check_"):]
+    user, client = await get_valid_user_client(callback.from_user.id)
+    if not user or not client:
+        return await callback.answer("API Key not found.", show_alert=True)
+
+    row = await db.get_activation_user(aid)
+    phone = row[1] if row else "Unknown"
+
+    res = await client.get_status(aid)
+    if isinstance(res, str):
+        if res.startswith("STATUS_OK:"):
+            code = res.split(":", 1)[1]
+            clean_p = str(phone).lstrip("+").strip()
+            count = phone_otp_counter.get(clean_p, 0) + 1
+            phone_otp_counter[clean_p] = count
+            is_second = (count > 1)
+            
+            text = format_otp_text(phone, code, is_second=is_second)
+            processed_otps[f"{aid}:{code}"] = time.time()
+            cleanup_expired_cache()
+            await callback.message.edit_text(text, reply_markup=kb.otp_copy_menu(code), parse_mode=ParseMode.HTML)
+        elif res.startswith("STATUS_WAIT_CODE"):
+            await callback.answer("Still waiting for SMS...", show_alert=True)
+        elif res.startswith("STATUS_CANCEL"):
+            await db.delete_activation(aid)
+            await callback.message.edit_text("Activation cancelled.", reply_markup=kb.back_button())
+        else:
+            await callback.answer(f"Status: {clean_error_text(res)}", show_alert=True)
+    else:
+        await callback.answer("Error checking status.", show_alert=True)
+
+@router.callback_query(F.data.startswith("single_cancel_"))
+async def cb_cancel_single(callback: CallbackQuery):
+    aid = callback.data[len("single_cancel_"):]
+    user, client = await get_valid_user_client(callback.from_user.id)
+    if not user or not client:
+        return await callback.answer("API Key not found.", show_alert=True)
+
+    res = await client.set_status(aid, 8)
+    if isinstance(res, str) and ("ACCESS_CANCEL" in res or "STATUS_CANCEL" in res):
+        await db.delete_activation(aid)
+        for k in list(processed_otps.keys()):
+            if k.startswith(f"{aid}:"):
+                del processed_otps[k]
+        await callback.message.edit_text("Cancelled. Balance refunded.", reply_markup=kb.back_button())
+    elif isinstance(res, str) and "EARLY_CANCEL_DENIED" in res:
+        await callback.answer("Cannot cancel within first 2 minutes.", show_alert=True)
+    else:
+        err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
+        await callback.answer(f"Error: {clean_error_text(err)}", show_alert=True)
 
 @router.callback_query(F.data == "noop")
 async def cb_noop(callback: CallbackQuery):
