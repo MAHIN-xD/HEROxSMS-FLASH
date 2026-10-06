@@ -158,7 +158,7 @@ async def start_restock_monitor():
 
 def format_tg_status(raw_status: any) -> tuple:
     if raw_status is None:
-        return '<tg-emoji emoji-id="5447410659077533898">⚠️</tg-emoji> Check Failed', False
+        return '<tg-emoji emoji-id="5447410659077533898">⚠️️</tg-emoji> Check Failed', False
 
     st = str(raw_status.get("status") if isinstance(raw_status, dict) else raw_status).strip().lower()
     if any(w in st for w in ["unoccupied", "unregistered", "not_registered", "free", "fresh", "available", "false", "0"]):
@@ -867,7 +867,7 @@ async def admin_toggle_maint(message: Message):
     await db.set_setting("maintenance", new_val)
     update_cached_setting("maintenance", new_val)
     status_label = 'ENABLED (Users Locked <tg-emoji emoji-id="5447410659077533898">❌</tg-emoji>)' if new_val == "1" else 'DISABLED (Normal Mode <tg-emoji emoji-id="5445284980970104593">✅</tg-emoji>)'
-    await message.answer(f'<tg-emoji emoji-id="5451646226938141753">⚙️️</tg-emoji> Maintenance Mode is now: <b>{status_label}</b>', parse_mode="HTML")
+    await message.answer(f'<tg-emoji emoji-id="5451646226938141753">⚙</tg-emoji> Maintenance Mode is now: <b>{status_label}</b>', parse_mode="HTML")
 
 
 @router.message(F.text == "📊 Users & OTP Monitor")
@@ -973,16 +973,16 @@ async def process_ban_id(message: Message, state: FSMContext):
     await state.clear()
 
 
-# --- Step-by-Step Unapprove ---
+# --- Step-by-Step Revoke Access ---
 @router.message(F.text == "❌ Unapprove / Revoke Access")
 async def admin_revoke_access_req(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
     await message.answer("Send the <b>User ID</b> to revoke access (or send cancel):", parse_mode="HTML")
-    await state.set_state(BotStates.waiting_for_unapprove_id)
+    await state.set_state(BotStates.waiting_for_revoke_id)
 
 
-@router.message(BotStates.waiting_for_unapprove_id)
+@router.message(BotStates.waiting_for_revoke_id)
 async def process_unapprove_id(message: Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
