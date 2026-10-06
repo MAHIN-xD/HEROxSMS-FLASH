@@ -62,7 +62,7 @@ def otp_copy_menu(otp_code: str) -> InlineKeyboardMarkup:
 def bulk_result_menu(batch_id: str, fresh_count: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     if fresh_count > 0:
-        b.button(text=f"🟢 View Fresh Numbers ({fresh_count})", callback_data=f"show_fresh_{batch_id}", style="success")
+        b.button(text=f"View Fresh Numbers ({fresh_count})", callback_data=f"show_fresh_{batch_id}", style="success")
     b.adjust(1)
     return b.as_markup()
 
@@ -70,7 +70,7 @@ def fresh_numbers_menu(fresh_phones: list, batch_id: str) -> InlineKeyboardMarku
     b = InlineKeyboardBuilder()
     for idx, phone in enumerate(fresh_phones, 1):
         clean = str(phone).lstrip("+").strip()
-        btn_text = f"{idx}. {clean} 🟢"
+        btn_text = f"{idx}. {clean}"
         try:
             from aiogram.types import CopyTextButton
             b.row(InlineKeyboardButton(text=btn_text, copy_text=CopyTextButton(text=f"+{clean}"), style="success"))
