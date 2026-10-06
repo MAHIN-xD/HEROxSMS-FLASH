@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State
 from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 from aiogram.utils.chat_action import ChatActionSender
 from aiohttp import web
@@ -13,6 +14,14 @@ from api_client import HeroSMSClient, check_telegram_numbers
 import database as db
 import keyboards as kb
 from states import BotStates
+
+# Ensure missing states exist safely on BotStates without crashing
+if not hasattr(BotStates, "waiting_for_revoke_id"):
+    BotStates.waiting_for_revoke_id = getattr(BotStates, "waiting_for_unapprove_id", State())
+if not hasattr(BotStates, "waiting_for_extend_id"):
+    BotStates.waiting_for_extend_id = State()
+if not hasattr(BotStates, "waiting_for_extend_days"):
+    BotStates.waiting_for_extend_days = State()
 
 router = Router()
 global_bot = None
@@ -158,7 +167,7 @@ async def start_restock_monitor():
 
 def format_tg_status(raw_status: any) -> tuple:
     if raw_status is None:
-        return '<tg-emoji emoji-id="5447410659077533898">⚠️️</tg-emoji> Check Failed', False
+        return '<tg-emoji emoji-id="5447410659077533898">⚠️</tg-emoji> Check Failed', False
 
     st = str(raw_status.get("status") if isinstance(raw_status, dict) else raw_status).strip().lower()
     if any(w in st for w in ["unoccupied", "unregistered", "not_registered", "free", "fresh", "available", "false", "0"]):
