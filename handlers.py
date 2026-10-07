@@ -121,7 +121,6 @@ async def start_live_sniper_process(message: Message, target_op: str):
 
         attempt += 1
 
-        # Direct Purchase Attempt
         res = await client.get_number(
             service=TG_SERVICE,
             country=COLOMBIA_ID,
@@ -130,7 +129,6 @@ async def start_live_sniper_process(message: Message, target_op: str):
             operator=clean_op
         )
 
-        # 1. Number Successfully Grabbed!
         if isinstance(res, dict) and "activationId" in res:
             aid = str(res["activationId"])
             phone = res.get("phoneNumber", "Unknown")
@@ -139,7 +137,6 @@ async def start_live_sniper_process(message: Message, target_op: str):
 
             op_detected = get_colombia_operator(clean_phone)
 
-            # Strict operator check (Claro target thakle onno operator discard)
             if clean_op != "any" and op_detected.lower() != clean_op:
                 try:
                     await client.set_status(aid, 8)
@@ -148,13 +145,11 @@ async def start_live_sniper_process(message: Message, target_op: str):
                 await asyncio.sleep(0.5)
                 continue
 
-            # Sniper loop instant auto-pause
             await db.set_setting("sniper_active", "0")
             set_cached_setting("sniper_active", "0")
 
             await db.save_activation(aid, message.from_user.id, clean_phone)
 
-            # Accurate rate calculation
             if cost_val is not None:
                 rate_str = f"${float(cost_val):.3f}"
             else:
@@ -164,7 +159,6 @@ async def start_live_sniper_process(message: Message, target_op: str):
                 else:
                     rate_str = f"${dynamic_max:.3f}"
 
-            # Status: Checking Telegram Freshness
             try:
                 await status_msg.edit_text(
                     f"🎯 <b>Number Grabbed!</b>\n"
@@ -175,7 +169,6 @@ async def start_live_sniper_process(message: Message, target_op: str):
             except Exception:
                 pass
 
-            # 2. Telegram Registration Check (20s safe timeout)
             try:
                 check_results = await asyncio.wait_for(check_telegram_numbers([clean_phone]), timeout=20.0)
             except Exception:
@@ -185,7 +178,6 @@ async def start_live_sniper_process(message: Message, target_op: str):
             raw_st = check_results.get(formatted_k) or check_results.get(clean_phone)
             tg_info = format_tg_status(raw_st)
 
-            # 3. Final Result formatting
             if tg_info["is_fresh"]:
                 verdict_text = "🟢 <b>FRESH NUMBER!</b> Waiting for OTP..."
             else:
@@ -211,9 +203,7 @@ async def start_live_sniper_process(message: Message, target_op: str):
             except Exception:
                 pass
 
-            # 4. Porpor 3-ti Loud Audible SMS Notification (disable_notification=False)
             try:
-                # SMS 1: Main Sound Alert
                 await message.answer(
                     f"🚨 <b>SNIPER ALERT (1/3)</b>\n\n"
                     f"📡 Operator: <b>{op_detected.upper()}</b>\n"
@@ -225,7 +215,6 @@ async def start_live_sniper_process(message: Message, target_op: str):
                 )
                 await asyncio.sleep(0.3)
 
-                # SMS 2: Instant 1-Tap Copy
                 await message.answer(
                     f"⚡ <b>TAP TO COPY (2/3):</b>\n\n<code>+{clean_phone}</code>",
                     parse_mode=ParseMode.HTML,
@@ -233,7 +222,6 @@ async def start_live_sniper_process(message: Message, target_op: str):
                 )
                 await asyncio.sleep(0.3)
 
-                # SMS 3: OTP Ready Notice
                 await message.answer(
                     "⏳ <b>OTP READY (3/3)</b>\n\n"
                     "Telegram-e number boshiye code pathan. OTP asha matroi button shoho show korbe!",
@@ -248,7 +236,6 @@ async def start_live_sniper_process(message: Message, target_op: str):
         elif isinstance(res, str) and "429" in res:
             await asyncio.sleep(6)
 
-        # Live Attempt UI Update (Single Line)
         now = time.time()
         if now - last_ui_edit >= 2.0:
             try:
@@ -356,10 +343,11 @@ async def get_valid_user_client(user_id: int):
     if not user:
         return None, None
     try:
-        api_key = user["api_key"]
+        user_dict = dict(user) if not isinstance(user, dict) else user
+        api_key = user_dict.get("api_key")
         if not api_key:
             return None, None
-        return user, HeroSMSClient(api_key)
+        return user_dict, HeroSMSClient(api_key)
     except Exception:
         return None, None
 
@@ -368,38 +356,67 @@ async def is_allowed(user_id: int) -> bool:
         return True
     
     user = await db.get_user(user_id)
-    if not user or user["is_banned"] or not user["is_approved"]:
+    if not user:
+        return False
+    user_dict = dict(user) if not isinstance(user, dict) else user
+    if user_dict.get("is_banned") or not user_dict.get("is_approved"):
         return False
         
     maintenance = await get_cached_setting("maintenance", "0")
     return maintenance != "1"
 
-# --- Webhook Handler ---
+# --- Webhook Handler (Universal GET/POST & Direct SQLite Lookup) ---
 async def handle_herosms_webhook(request: web.Request):
     data = {}
     try:
+        if request.query:
+            data.update(dict(request.query))
         if request.method == "POST":
             try:
-                data = await request.json()
+                body_json = await request.json()
+                if isinstance(body_json, dict):
+                    data.update(body_json)
             except Exception:
-                data = dict(await request.post())
-        if not data:
-            data = dict(request.query)
+                try:
+                    body_post = await request.post()
+                    data.update(dict(body_post))
+                except Exception:
+                    pass
     except Exception as e:
-        logging.error(f"Error reading webhook request: {e}")
+        logging.error(f"Error parsing webhook incoming data: {e}")
         return web.Response(text="Bad Request", status=400)
 
-    aid = str(data.get("activationId") or data.get("id") or data.get("activation_id") or "").strip()
-    raw_code = data.get("code") or data.get("smsCode") or data.get("text") or data.get("sms") or ""
-    
+    aid = str(
+        data.get("activationId") or 
+        data.get("id") or 
+        data.get("activation_id") or 
+        data.get("activationId".lower()) or 
+        ""
+    ).strip()
+
+    raw_code = (
+        data.get("code") or 
+        data.get("smsCode") or 
+        data.get("text") or 
+        data.get("sms") or 
+        data.get("action") or 
+        ""
+    )
+
     code = ""
     if raw_code:
-        match = re.search(r'\b\d{4,8}\b', str(raw_code))
-        code = match.group(0) if match else str(raw_code).strip()
+        str_val = str(raw_code).strip()
+        if str_val.startswith("STATUS_OK:"):
+            code = str_val.split(":", 1)[1].strip()
+        else:
+            match = re.search(r'\d{4,8}', str_val)
+            code = match.group(0) if match else str_val
 
-    direct_phone = data.get("phoneNumber") or data.get("phone") or ""
+    direct_phone = str(data.get("phoneNumber") or data.get("phone") or "").lstrip("+").strip()
 
-    if not aid or not code:
+    logging.info(f"⚡ [Webhook Received] AID: {aid} | Code: {code} | Phone: {direct_phone}")
+
+    if not aid or not code or code in ["STATUS_WAIT_CODE", "STATUS_CANCEL"]:
         return web.Response(text="OK", status=200)
 
     cache_key = f"{aid}:{code}"
@@ -413,12 +430,23 @@ async def handle_herosms_webhook(request: web.Request):
         user_id = None
         phone = direct_phone
 
+        # Safe database inspection (dict, sqlite3.Row, tuple handling)
         row = await db.get_activation_user(aid)
+        if not row and hasattr(db, "get_activation"):
+            row = await db.get_activation(aid)
+
         if row:
-            user_id = row[0]
-            if not phone:
-                phone = row[1]
-        
+            if isinstance(row, dict):
+                user_id = row.get("user_id")
+                phone = phone or row.get("phone")
+            elif hasattr(row, "keys"):
+                r_dict = dict(row)
+                user_id = r_dict.get("user_id")
+                phone = phone or r_dict.get("phone")
+            elif isinstance(row, (list, tuple)) and len(row) >= 2:
+                user_id = row[0]
+                phone = phone or row[1]
+
         if user_id and phone:
             clean_p = str(phone).lstrip("+").strip()
             count = phone_otp_counter.get(clean_p, 0) + 1
@@ -436,8 +464,11 @@ async def handle_herosms_webhook(request: web.Request):
                         parse_mode=ParseMode.HTML,
                         disable_notification=False
                     )
+                    logging.info(f"✅ OTP successfully delivered to User {user_id} for number {phone}")
                 except Exception as e:
                     logging.error(f"Failed to send webhook OTP to user {user_id}: {e}")
+        else:
+            logging.warning(f"⚠️ Webhook matching failed: AID {aid} not found in database or user_id missing.")
     except Exception as e:
         logging.error(f"Error processing webhook database lookup for {aid}: {e}")
 
@@ -449,15 +480,25 @@ async def cmd_start(message: Message, state: FSMContext):
     await state.clear()
     uid = message.from_user.id
 
-    if uid == ADMIN_ID:
+    try:
+        await db.add_user(uid, message.from_user.username, message.from_user.full_name)
+    except TypeError:
         try:
             await db.add_user(uid)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    if uid == ADMIN_ID:
+        try:
             await db.set_approval_status(uid, True)
         except Exception:
             pass
 
         user = await db.get_user(uid)
-        has_api_key = bool(user and user["api_key"])
+        user_dict = dict(user) if user and hasattr(user, "keys") else (user if isinstance(user, dict) else {})
+        has_api_key = bool(user_dict.get("api_key"))
         if not has_api_key:
             await message.answer(
                 "👑 <b>Welcome Admin!</b>\n\nPlease send your HeroSMS API Key to get started:",
@@ -470,14 +511,17 @@ async def cmd_start(message: Message, state: FSMContext):
         return
 
     user = await db.get_user(uid)
-    if not user or not user["is_approved"] or user["is_banned"]:
+    if not user:
+        return
+    user_dict = dict(user) if hasattr(user, "keys") else (user if isinstance(user, dict) else {})
+    if not user_dict.get("is_approved") or user_dict.get("is_banned"):
         return
 
     maintenance = await get_cached_setting("maintenance", "0")
     if maintenance == "1":
         return
 
-    has_api_key = bool(user and user["api_key"])
+    has_api_key = bool(user_dict.get("api_key"))
     if not has_api_key:
         await message.answer(
             "Welcome to HeroSMS Bot!\n\nPlease send your HeroSMS API Key to get started.",
@@ -602,7 +646,7 @@ async def cb_tools_page_2(callback: CallbackQuery):
     maintenance = (await get_cached_setting("maintenance", "0")) == "1"
     
     snapshot = (
-        f"🛠️️ <b>Control Center & Tools (Page 2/2)</b>\n\n"
+        f"🛠️ <b>Control Center & Tools (Page 2/2)</b>\n\n"
         f"⚙️ <b>Advanced & Administrative Controls:</b>\n"
         f"• HeroSMS API Key Management\n"
         f"• Order Statistics & User Management\n"
@@ -668,7 +712,8 @@ async def cb_tool_balance(callback: CallbackQuery):
 async def cb_tool_view_api_key(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     user = await db.get_user(callback.from_user.id)
-    api_k = user.get("api_key") if user else None
+    user_dict = dict(user) if user and hasattr(user, "keys") else (user if isinstance(user, dict) else {})
+    api_k = user_dict.get("api_key")
     
     if api_k:
         masked_preview = f"{api_k[:6]}...{api_k[-4:]}"
@@ -1516,7 +1561,8 @@ async def process_ban_id(message: Message, state: FSMContext):
     user = await db.get_user(target)
     if not user:
         return await message.answer("User not found.")
-    new_status = not bool(user["is_banned"])
+    user_dict = dict(user) if hasattr(user, "keys") else (user if isinstance(user, dict) else {})
+    new_status = not bool(user_dict.get("is_banned"))
     await db.set_ban_status(target, new_status)
     label = "BANNED 🚫" if new_status else "UNBANNED ✅"
     await message.answer(f"User <code>{target}</code> is now <b>{label}</b>.", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
@@ -1531,7 +1577,17 @@ async def cb_check_sms(callback: CallbackQuery):
         return await callback.answer("API Key not found.", show_alert=True)
 
     row = await db.get_activation_user(aid)
-    phone = row[1] if row else "Unknown"
+    if not row and hasattr(db, "get_activation"):
+        row = await db.get_activation(aid)
+
+    phone = "Unknown"
+    if row:
+        if isinstance(row, dict):
+            phone = row.get("phone", "Unknown")
+        elif hasattr(row, "keys"):
+            phone = dict(row).get("phone", "Unknown")
+        elif isinstance(row, (list, tuple)) and len(row) >= 2:
+            phone = row[1]
 
     res = await client.get_status(aid)
     if isinstance(res, str):
