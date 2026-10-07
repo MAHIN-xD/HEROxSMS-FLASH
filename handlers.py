@@ -9,6 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State
 from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 from aiogram.utils.chat_action import ChatActionSender
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiohttp import web
 from api_client import HeroSMSClient, check_telegram_numbers
 import database as db
@@ -86,6 +87,10 @@ async def get_cached_user(user_id: int):
         return USER_CACHE[user_id]
     user = await db.get_user(user_id)
     if user:
+        try:
+            user = dict(user)
+        except Exception:
+            pass
         USER_CACHE[user_id] = user
     return user
 
@@ -179,7 +184,8 @@ async def start_restock_monitor():
                                             )
                                             for u in approved:
                                                 try:
-                                                    await bot.send_message(u["user_id"], msg_text, parse_mode="HTML")
+                                                    u_dict = dict(u) if not isinstance(u, dict) else u
+                                                    await bot.send_message(u_dict["user_id"], msg_text, parse_mode="HTML")
                                                     await asyncio.sleep(0.04)
                                                 except Exception:
                                                     pass
@@ -255,9 +261,10 @@ async def handle_herosms_webhook(request):
     if action == "STATUS_OK" and code:
         row = await db.get_activation(aid)
         if row:
-            user_id = row["user_id"]
-            phone = row["phone"]
-            msg_id = row["message_id"]
+            row_dict = dict(row) if not isinstance(row, dict) else row
+            user_id = row_dict["user_id"]
+            phone = row_dict["phone"]
+            msg_id = row_dict["message_id"]
             text = (
                 f'{EMOJI_FLAG} Number: <code>+{phone}</code>\n'
                 f'{EMOJI_CARD} OTP: <code>{code}</code>'
@@ -297,6 +304,7 @@ async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: He
         if not row:
             return
 
+        row_dict = dict(row) if not isinstance(row, dict) else row
         try:
             res = await client.get_status(activation_id)
             if isinstance(res, str):
@@ -306,7 +314,7 @@ async def poll_sms(bot, chat_id: int, activation_id: str, phone: str, client: He
                         f'{EMOJI_FLAG} Number: <code>+{phone}</code>\n'
                         f'{EMOJI_CARD} OTP: <code>{code}</code>'
                     )
-                    msg_id = row["message_id"]
+                    msg_id = row_dict.get("message_id")
                     if msg_id:
                         await bot.edit_message_text(
                             text=text, chat_id=chat_id, message_id=msg_id,
@@ -340,7 +348,6 @@ async def cmd_start(message: Message, state: FSMContext):
         uname = message.from_user.username
         fname = message.from_user.full_name
 
-        # Safe add_user call
         try:
             await db.add_user(uid, uname, fname)
         except TypeError:
@@ -376,7 +383,7 @@ async def cmd_start(message: Message, state: FSMContext):
                 username_str = f"@{uname}" if uname else "No Username"
                 alert_text = (
                     f'{EMOJI_SIREN} <b>New Approval Request!</b>\n\n'
-                    f'{EMOJI_USER} <b>Name:</b> {html.escape(fname)}\n'
+                    f'{EMOJI_USER} <b>Name:</b> {html.escape(fname or "User")}\n'
                     f'{EMOJI_PLANE} <b>Username:</b> {username_str}\n'
                     f'{EMOJI_CARD} <b>User ID:</b> <code>{uid}</code>\n\n'
                     'Select duration to approve:'
@@ -402,6 +409,7 @@ async def cmd_start(message: Message, state: FSMContext):
             await state.set_state(BotStates.waiting_for_api_key)
         else:
             await message.answer("Welcome back! Select an option:", reply_markup=kb.main_reply_menu())
+
 
 # --- Admin Approval Callbacks ---
 @router.callback_query(F.data.startswith("appr_"))
@@ -612,7 +620,10 @@ async def cb_refresh_sms(callback: CallbackQuery):
             if res.startswith("STATUS_OK:"):
                 code = res.split(":", 1)[1]
                 row = await db.get_activation(aid)
-                phone = row["phone"] if row else "Unknown"
+                phone = "Unknown"
+                if row:
+                    row_dict = dict(row) if not isinstance(row, dict) else row
+                    phone = row_dict.get("phone", "Unknown")
                 await callback.message.edit_text(
                     f'{EMOJI_FLAG} Number: <code>+{phone}</code>\n'
                     f'{EMOJI_CARD} OTP: <code>{code}</code>',
@@ -876,7 +887,8 @@ async def cb_broadcast_live_stock(callback: CallbackQuery):
     sent = 0
     for u in users:
         try:
-            await callback.bot.send_message(u["user_id"], msg_to_send, parse_mode="HTML")
+            u_dict = dict(u) if not isinstance(u, dict) else u
+            await callback.bot.send_message(u_dict["user_id"], msg_to_send, parse_mode="HTML")
             sent += 1
             await asyncio.sleep(0.04)
         except Exception:
@@ -925,14 +937,15 @@ async def admin_monitor_users(message: Message):
 
         lines = [f'{EMOJI_USER} <b>Approved Users Monitoring ({len(users)}):</b>\n']
         for idx, u in enumerate(users, 1):
-            uname = f"@{u['username']}" if u['username'] else "No Username"
-            api_preview = f"<code>{u['api_key'][:8]}...</code>" if u.get('api_key') else "<i>Not Set</i>"
-            exp = u.get("expiry_date") or "Lifetime"
+            u_dict = dict(u) if not isinstance(u, dict) else u
+            uname = f"@{u_dict['username']}" if u_dict.get('username') else "No Username"
+            api_preview = f"<code>{u_dict['api_key'][:8]}...</code>" if u_dict.get('api_key') else "<i>Not Set</i>"
+            exp = u_dict.get("expiry_date") or "Lifetime"
             lines.append(
-                f"<b>{idx}. {html.escape(str(u.get('full_name') or 'User'))}</b> ({uname})\n"
-                f"• ID: <code>{u['user_id']}</code> | Exp: <code>{exp}</code>\n"
+                f"<b>{idx}. {html.escape(str(u_dict.get('full_name') or 'User'))}</b> ({uname})\n"
+                f"• ID: <code>{u_dict['user_id']}</code> | Exp: <code>{exp}</code>\n"
                 f"• Key: {api_preview}\n"
-                f"• Bought: <b>{u.get('total_purchased', 0)}</b> | OTPs: <b>{u.get('total_otps', 0)}</b>\n"
+                f"• Bought: <b>{u_dict.get('total_purchased', 0)}</b> | OTPs: <b>{u_dict.get('total_otps', 0)}</b>\n"
             )
         text = "\n".join(lines)
         if len(text) > 4000:
@@ -954,9 +967,10 @@ async def admin_live_active_users(message: Message):
         active_list = []
         now = datetime.now(timezone.utc)
         for u in users:
-            exp = u.get("expiry_date")
+            u_dict = dict(u) if not isinstance(u, dict) else u
+            exp = u_dict.get("expiry_date")
             if exp == "LIFETIME":
-                active_list.append((u, "Lifetime Access"))
+                active_list.append((u_dict, "Lifetime Access"))
             elif exp:
                 try:
                     exp_date = datetime.strptime(exp, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
@@ -964,7 +978,7 @@ async def admin_live_active_users(message: Message):
                         delta = exp_date - now
                         days_left = delta.days
                         hours_left = delta.seconds // 3600
-                        active_list.append((u, f"{days_left}d {hours_left}h remaining"))
+                        active_list.append((u_dict, f"{days_left}d {hours_left}h remaining"))
                 except Exception:
                     pass
 
@@ -972,11 +986,11 @@ async def admin_live_active_users(message: Message):
             return await message.answer(f'{EMOJI_WARN} Currently no users have active valid subscriptions.', parse_mode="HTML")
 
         lines = [f'{EMOJI_USER} <b>Live Active Users ({len(active_list)}):</b>\n']
-        for idx, (u, time_left) in enumerate(active_list, 1):
-            uname = f"@{u['username']}" if u['username'] else "No Username"
+        for idx, (u_dict, time_left) in enumerate(active_list, 1):
+            uname = f"@{u_dict['username']}" if u_dict.get('username') else "No Username"
             lines.append(
-                f"<b>{idx}. {html.escape(str(u.get('full_name') or 'User'))}</b> ({uname})\n"
-                f"• ID: <code>{u['user_id']}</code>\n"
+                f"<b>{idx}. {html.escape(str(u_dict.get('full_name') or 'User'))}</b> ({uname})\n"
+                f"• ID: <code>{u_dict['user_id']}</code>\n"
                 f'• Status: {EMOJI_TICK} <b>Active</b> ({time_left})\n'
             )
         await message.answer("\n".join(lines), parse_mode="HTML")
