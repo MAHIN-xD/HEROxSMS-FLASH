@@ -106,6 +106,17 @@ def update_cached_setting(key: str, val: str):
     SETTINGS_CACHE[key] = val
 
 
+# --- Periodic Janitor Background Worker ---
+async def start_periodic_janitor():
+    while True:
+        try:
+            await asyncio.sleep(600)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logging.error(f"Janitor error: {e}")
+
+
 # --- Background Tasks ---
 async def auto_cancel_bad_number_worker(client: HeroSMSClient, aid: str, phone: str, user_id: int):
     await asyncio.sleep(125)
