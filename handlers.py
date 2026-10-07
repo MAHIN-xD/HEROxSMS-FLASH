@@ -89,7 +89,7 @@ async def start_periodic_janitor():
         except Exception as e:
             logging.error(f"Janitor error: {e}")
 
-# --- Real Live Sniper Grabber with Telegram Freshness Verification ---
+# --- Real Live Sniper Grabber with Telegram Freshness Verification & 3x Alerts ---
 async def start_live_sniper_process(message: Message, target_op: str):
     user, client = await get_valid_user_client(message.from_user.id)
     if not user or not client:
@@ -137,6 +137,17 @@ async def start_live_sniper_process(message: Message, target_op: str):
             cost_val = res.get("cost")
             clean_phone = str(phone).lstrip("+").strip()
 
+            op_detected = get_colombia_operator(clean_phone)
+
+            # Strict operator check (Claro target thakle onno operator discard)
+            if clean_op != "any" and op_detected.lower() != clean_op:
+                try:
+                    await client.set_status(aid, 8)
+                except Exception:
+                    pass
+                await asyncio.sleep(0.5)
+                continue
+
             # Sniper loop instant auto-pause
             await db.set_setting("sniper_active", "0")
             set_cached_setting("sniper_active", "0")
@@ -152,8 +163,6 @@ async def start_live_sniper_process(message: Message, target_op: str):
                     rate_str = f"${(init_bal - curr_bal):.3f}"
                 else:
                     rate_str = f"${dynamic_max:.3f}"
-
-            op_detected = get_colombia_operator(clean_phone)
 
             # Status: Checking Telegram Freshness
             try:
@@ -201,6 +210,39 @@ async def start_live_sniper_process(message: Message, target_op: str):
                 )
             except Exception:
                 pass
+
+            # 4. Porpor 3-ti Loud Audible SMS Notification (disable_notification=False)
+            try:
+                # SMS 1: Main Sound Alert
+                await message.answer(
+                    f"🚨 <b>SNIPER ALERT (1/3)</b>\n\n"
+                    f"📡 Operator: <b>{op_detected.upper()}</b>\n"
+                    f"🇨🇴 Number: <code>+{clean_phone}</code>\n"
+                    f"💵 Rate: <b>{rate_str}</b>\n"
+                    f"🔍 Status: <b>{tg_info['badge']}</b>",
+                    parse_mode=ParseMode.HTML,
+                    disable_notification=False
+                )
+                await asyncio.sleep(0.3)
+
+                # SMS 2: Instant 1-Tap Copy
+                await message.answer(
+                    f"⚡ <b>TAP TO COPY (2/3):</b>\n\n<code>+{clean_phone}</code>",
+                    parse_mode=ParseMode.HTML,
+                    disable_notification=False
+                )
+                await asyncio.sleep(0.3)
+
+                # SMS 3: OTP Ready Notice
+                await message.answer(
+                    "⏳ <b>OTP READY (3/3)</b>\n\n"
+                    "Telegram-e number boshiye code pathan. OTP asha matroi button shoho show korbe!",
+                    parse_mode=ParseMode.HTML,
+                    disable_notification=False
+                )
+            except Exception as e:
+                logging.error(f"Failed to send 3x loud notifications: {e}")
+
             break
 
         elif isinstance(res, str) and "429" in res:
@@ -219,7 +261,7 @@ async def start_live_sniper_process(message: Message, target_op: str):
             except (TelegramRetryAfter, TelegramBadRequest, Exception):
                 pass
 
-        await asyncio.sleep(2.2)
+        await asyncio.sleep(2.5)
 
 async def auto_cancel_bad_numbers(client: HeroSMSClient, bad_items: list):
     if not bad_items:
@@ -391,7 +433,8 @@ async def handle_herosms_webhook(request: web.Request):
                         user_id,
                         msg_text,
                         reply_markup=kb.otp_copy_menu(code),
-                        parse_mode=ParseMode.HTML
+                        parse_mode=ParseMode.HTML,
+                        disable_notification=False
                     )
                 except Exception as e:
                     logging.error(f"Failed to send webhook OTP to user {user_id}: {e}")
@@ -506,7 +549,7 @@ async def cb_menu_main(callback: CallbackQuery, state: FSMContext):
         pass
     await callback.message.answer("Main Menu:", reply_markup=kb.main_reply_menu())
 
-# --- Quick Tools Dashboard (/t, /tools, /admin ebong chat-e shudhu 't' likhle) ---
+# --- Quick Tools Dashboard (/t, /tools, /admin) ---
 @router.message(Command("t", "tools", "admin"))
 @router.message(F.text.casefold() == "t")
 async def open_tools_menu(message: Message, state: FSMContext):
@@ -547,7 +590,10 @@ async def cb_tools_page_1(callback: CallbackQuery):
         f"• Auto Sniper: <code>{'ACTIVE (' + sniper_op.upper() + ')' if sniper_on else 'OFF'}</code>\n\n"
         f"Select any tool or action from the buttons below:"
     )
-    await callback.message.edit_text(snapshot, reply_markup=kb.tools_menu_page_1(sniper_on, sniper_op), parse_mode=ParseMode.HTML)
+    try:
+        await callback.message.edit_text(snapshot, reply_markup=kb.tools_menu_page_1(sniper_on, sniper_op), parse_mode=ParseMode.HTML)
+    except (TelegramBadRequest, Exception):
+        pass
 
 @router.callback_query(F.data == "tools_page_2")
 async def cb_tools_page_2(callback: CallbackQuery):
@@ -556,14 +602,17 @@ async def cb_tools_page_2(callback: CallbackQuery):
     maintenance = (await get_cached_setting("maintenance", "0")) == "1"
     
     snapshot = (
-        f"🛠️ <b>Control Center & Tools (Page 2/2)</b>\n\n"
+        f"🛠️️ <b>Control Center & Tools (Page 2/2)</b>\n\n"
         f"⚙️ <b>Advanced & Administrative Controls:</b>\n"
         f"• HeroSMS API Key Management\n"
         f"• Order Statistics & User Management\n"
         f"• System Maintenance & Broadcast\n\n"
         f"Select an action from below:"
     )
-    await callback.message.edit_text(snapshot, reply_markup=kb.tools_menu_page_2(maintenance), parse_mode=ParseMode.HTML)
+    try:
+        await callback.message.edit_text(snapshot, reply_markup=kb.tools_menu_page_2(maintenance), parse_mode=ParseMode.HTML)
+    except (TelegramBadRequest, Exception):
+        pass
 
 # --- Sniper Toggle & Start Flow ---
 @router.callback_query(F.data == "tool_toggle_sniper")
@@ -598,10 +647,9 @@ async def process_sniper_operator(message: Message, state: FSMContext):
     await db.set_setting("sniper_op", target_op)
     set_cached_setting("sniper_op", target_op)
 
-    # Starts Live Bulk-Style Hunting Screen
     asyncio.create_task(start_live_sniper_process(message, target_op))
 
-# --- Button: Check Balance (Page 1-e Shobar Prothome) ---
+# --- Button: Check Balance ---
 @router.callback_query(F.data == "tool_balance")
 async def cb_tool_balance(callback: CallbackQuery):
     user, client = await get_valid_user_client(callback.from_user.id)
@@ -818,7 +866,10 @@ async def cb_tool_reset_op(callback: CallbackQuery):
     await db.set_setting("preferred_operator", DEFAULT_OPERATOR)
     set_cached_setting("preferred_operator", DEFAULT_OPERATOR)
     await callback.answer(f"Operator reset to {DEFAULT_OPERATOR.upper()}!", show_alert=True)
-    return await cb_tools_page_1(callback)
+    try:
+        return await cb_tools_page_1(callback)
+    except (TelegramBadRequest, Exception):
+        pass
 
 # --- Exclude / Blacklist Management ---
 @router.callback_query(F.data == "tool_exclude")
@@ -888,7 +939,10 @@ async def cb_tool_reset_exclude(callback: CallbackQuery):
     await db.set_setting("excluded_prefixes", saved_str)
     set_cached_setting("excluded_prefixes", saved_str)
     await callback.answer("Blacklist reset to default (57350, 57351)!", show_alert=True)
-    return await cb_tools_page_1(callback)
+    try:
+        return await cb_tools_page_1(callback)
+    except (TelegramBadRequest, Exception):
+        pass
 
 # --- Retry & Cancel Specific Number ---
 @router.callback_query(F.data == "tool_retry")
