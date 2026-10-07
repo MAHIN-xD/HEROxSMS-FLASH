@@ -14,3 +14,6 @@ class BotStates(StatesGroup):
     waiting_for_retry = State()
     waiting_for_cancel = State()
     waiting_for_sniper_operator = State()
+    # Subscription extend er jonno ei 2ta missing chilo:
+    waiting_for_extend_id = State()
+    waiting_for_extend_days = State()
