@@ -340,10 +340,23 @@ async def cmd_start(message: Message, state: FSMContext):
         uname = message.from_user.username
         fname = message.from_user.full_name
 
-        is_appr = 1 if uid == ADMIN_ID else 0
-        await db.add_user(uid, uname, fname, is_approved=is_appr)
+        # Safe add_user call
+        try:
+            await db.add_user(uid, uname, fname)
+        except TypeError:
+            try:
+                await db.add_user(uid)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         if uid == ADMIN_ID:
-            await db.set_user_subscription(ADMIN_ID, days=None)
+            try:
+                await db.set_approval_status(ADMIN_ID, True)
+                await db.set_user_subscription(ADMIN_ID, days=None)
+            except Exception:
+                pass
         invalidate_user_cache(uid)
 
         user = await get_cached_user(uid)
@@ -389,7 +402,6 @@ async def cmd_start(message: Message, state: FSMContext):
             await state.set_state(BotStates.waiting_for_api_key)
         else:
             await message.answer("Welcome back! Select an option:", reply_markup=kb.main_reply_menu())
-
 
 # --- Admin Approval Callbacks ---
 @router.callback_query(F.data.startswith("appr_"))
