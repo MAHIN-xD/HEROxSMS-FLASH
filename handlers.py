@@ -29,11 +29,11 @@ def set_bot_instance(bot):
 def get_bot_instance():
     return global_bot
 
-ADMIN_ID     = 7266067201
-ARGENTINA_ID = 39
-TG_SERVICE   = "tg"
+ADMIN_ID    = 7266067201
+COLOMBIA_ID = 33
+TG_SERVICE  = "tg"
 
-DEFAULT_EXCLUDE_LIST = []
+DEFAULT_EXCLUDE_LIST = ["57350", "57351"]
 DEFAULT_OPERATOR = "any"
 
 processed_otps = {}
@@ -45,7 +45,7 @@ MENU_BUTTONS = ["Bulk Buy Numbers", "Finish"]
 SETTINGS_CACHE = {}
 
 # --- Verified Custom Premium Emojis ---
-EMOJI_FLAG  = '<tg-emoji emoji-id="5294010206974397371">🇦🇷</tg-emoji>'
+EMOJI_FLAG  = '<tg-emoji emoji-id="5294010206974397371">🇨🇴</tg-emoji>'
 EMOJI_CARD  = '<tg-emoji emoji-id="5206330150433595241">💳</tg-emoji>'
 EMOJI_TICK  = '<tg-emoji emoji-id="6087154735125630953">✅</tg-emoji>'
 EMOJI_CROSS = '<tg-emoji emoji-id="5321012601939838274">❌</tg-emoji>'
@@ -137,7 +137,7 @@ async def start_live_sniper_process(message: Message, target_op: str):
 
         res = await client.get_number(
             service=TG_SERVICE,
-            country=ARGENTINA_ID,
+            country=COLOMBIA_ID,
             max_price=dynamic_max,
             phone_exception=api_exc,
             operator=clean_op
@@ -149,7 +149,15 @@ async def start_live_sniper_process(message: Message, target_op: str):
             cost_val = res.get("cost")
             clean_phone = str(phone).lstrip("+").strip()
 
-            op_detected = get_argentina_operator(clean_phone)
+            op_detected = get_colombia_operator(clean_phone)
+
+            if clean_op != "any" and op_detected.lower() != clean_op:
+                try:
+                    await client.set_status(aid, 8)
+                except Exception:
+                    pass
+                await asyncio.sleep(0.5)
+                continue
 
             await db.set_setting("sniper_active", "0")
             set_cached_setting("sniper_active", "0")
@@ -274,13 +282,22 @@ async def auto_cancel_bad_numbers(client: HeroSMSClient, bad_items: list):
         except Exception as e:
             logging.warning(f"Auto-cancel failed for {aid}: {e}")
 
-def get_argentina_operator(phone: str) -> str:
+def get_colombia_operator(phone: str) -> str:
     clean = str(phone).lstrip("+").strip()
-    if clean.startswith("54"):
+    if clean.startswith("57"):
         clean = clean[2:]
-    if clean.startswith("9"):
-        clean = clean[1:]
-    return "Argentina Line"
+    prefix = clean[:3]
+    if prefix in ["310", "311", "312", "313", "314", "320", "321", "322", "323"]:
+        return "Claro"
+    elif prefix in ["300", "301", "302", "304", "305", "324"]:
+        return "Tigo"
+    elif prefix in ["315", "316", "317", "318"]:
+        return "Movistar"
+    elif prefix in ["350", "351", "333"]:
+        return "WOM"
+    elif prefix in ["319"]:
+        return "Virgin"
+    return "Unknown"
 
 def format_otp_text(phone: str, code: str, is_second: bool = False) -> str:
     clean_phone = str(phone).lstrip("+").strip()
@@ -427,6 +444,7 @@ async def handle_herosms_webhook(request: web.Request):
         user_id = None
         phone = direct_phone
 
+        # Safe database inspection (dict, sqlite3.Row, tuple handling)
         row = await db.get_activation_user(aid)
         if not row and hasattr(db, "get_activation"):
             row = await db.get_activation(aid)
@@ -668,7 +686,7 @@ async def cb_tool_toggle_sniper(callback: CallbackQuery, state: FSMContext):
         await callback.answer()
         await callback.message.edit_text(
             "🎯 <b>Auto Sniper Direct Grabber</b>\n\n"
-            "Kon operator-er number continuous try korte chan? Operator name likhun (e.g. <code>claro</code>, <code>personal</code>, <code>movistar</code>):",
+            "Kon operator-er number continuous try korte chan? Operator name likhun (e.g. <code>claro</code>, <code>tigo</code>, <code>movistar</code>):",
             reply_markup=kb.back_button("tools_page_1"),
             parse_mode=ParseMode.HTML
         )
@@ -867,7 +885,7 @@ async def cb_tool_set_op(callback: CallbackQuery, state: FSMContext):
     cur = await get_preferred_operator_str()
     await callback.message.edit_text(
         f"📡 <b>Current Operator:</b> <code>{cur.upper()}</code>\n\n"
-        f"Please send the operator name (e.g. <code>claro</code>, <code>personal</code>, <code>movistar</code>, or <code>any</code>):",
+        f"Please send the operator name (e.g. <code>claro</code>, <code>tigo</code>, <code>movistar</code>, or <code>any</code>):",
         reply_markup=kb.back_button("tools_page_1"),
         parse_mode=ParseMode.HTML
     )
@@ -889,13 +907,13 @@ async def cb_tool_op_list(callback: CallbackQuery):
     user, client = await get_valid_user_client(callback.from_user.id)
     if not user or not client:
         return await callback.answer("Set your API Key first.", show_alert=True)
-    res = await client.get_operators(country=ARGENTINA_ID)
+    res = await client.get_operators(country=COLOMBIA_ID)
     cur = await get_preferred_operator_str()
     if isinstance(res, dict) and res.get("status") == "success":
-        argentina_ops = res.get("countryOperators", {}).get(str(ARGENTINA_ID), [])
-        op_str = ", ".join(argentina_ops) if argentina_ops else "None"
+        colombia_ops = res.get("countryOperators", {}).get(str(COLOMBIA_ID), [])
+        op_str = ", ".join(colombia_ops) if colombia_ops else "None"
         text = (
-            f"📡 <b>Live Argentina Operators:</b>\n<code>{op_str}</code>\n\n"
+            f"📡 <b>Live Colombia Operators:</b>\n<code>{op_str}</code>\n\n"
             f"⚙️ <b>Currently Active:</b> <code>{cur.upper()}</code>"
         )
         await callback.message.edit_text(text, reply_markup=kb.back_button("tools_page_1"), parse_mode=ParseMode.HTML)
@@ -916,7 +934,7 @@ async def cb_tool_reset_op(callback: CallbackQuery):
 @router.callback_query(F.data == "tool_exclude")
 async def cb_tool_exclude(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "➕ <b>Exclude Prefix:</b>\n\nSend prefix to blacklist (e.g. <code>54911</code>):",
+        "➕ <b>Exclude Prefix:</b>\n\nSend prefix to blacklist (e.g. <code>57350</code> or <code>57300,57301</code>):",
         reply_markup=kb.back_button("tools_page_1"),
         parse_mode=ParseMode.HTML
     )
@@ -943,7 +961,7 @@ async def process_exclude_input(message: Message, state: FSMContext):
 @router.callback_query(F.data == "tool_unexclude")
 async def cb_tool_unexclude(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "➖ <b>Unexclude Prefix:</b>\n\nSend prefix to remove from blacklist:",
+        "➖ <b>Unexclude Prefix:</b>\n\nSend prefix to remove from blacklist (e.g. <code>57350</code>):",
         reply_markup=kb.back_button("tools_page_1"),
         parse_mode=ParseMode.HTML
     )
@@ -979,7 +997,7 @@ async def cb_tool_reset_exclude(callback: CallbackQuery):
     saved_str = ",".join(DEFAULT_EXCLUDE_LIST)
     await db.set_setting("excluded_prefixes", saved_str)
     set_cached_setting("excluded_prefixes", saved_str)
-    await callback.answer("Blacklist reset to default!", show_alert=True)
+    await callback.answer("Blacklist reset to default (57350, 57351)!", show_alert=True)
     try:
         return await cb_tools_page_1(callback)
     except (TelegramBadRequest, Exception):
@@ -1222,7 +1240,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         for attempt in range(3):
             res = await client.get_number(
                 service=TG_SERVICE, 
-                country=ARGENTINA_ID, 
+                country=COLOMBIA_ID, 
                 max_price=dynamic_max,
                 phone_exception=api_exc,
                 operator=api_op
@@ -1262,7 +1280,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
                 try:
                     display_lines = purchased[-10:]
                     lines = "\n".join(
-                        f"{n}. <b>+{p}</b> ({get_argentina_operator(p)})" 
+                        f"{n}. <b>+{p}</b> ({get_colombia_operator(p)})" 
                         for n, p in enumerate(display_lines, len(purchased)-len(display_lines)+1)
                     )
                     percent = int((len(purchased) / amount) * 100)
@@ -1302,7 +1320,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 
         for p in purchased:
             clean_p = str(p).lstrip("+").strip()
-            op = get_argentina_operator(clean_p)
+            op = get_colombia_operator(clean_p)
             formatted_k = f"+{clean_p}"
             raw_st = check_results.get(formatted_k) or check_results.get(clean_p)
             info = format_tg_status(raw_st)
