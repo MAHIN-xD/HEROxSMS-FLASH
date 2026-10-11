@@ -46,17 +46,17 @@ SETTINGS_CACHE = {}
 
 # --- Verified Custom Premium Emojis ---
 EMOJI_FLAG  = '<tg-emoji emoji-id="5294010206974397371">🇨🇴</tg-emoji>'
-EMOJI_CARD  = '<tg-emoji emoji-id="5206330150433595241">💳</tg-emoji>'
-EMOJI_TICK  = '<tg-emoji emoji-id="6087154735125630953">✅</tg-emoji>'
-EMOJI_CROSS = '<tg-emoji emoji-id="5321012601939838274">❌</tg-emoji>'
+EMOJI_CARD  = '<tg-emoji emoji-id="5888561507557447441">💳</tg-emoji>'
+EMOJI_TICK  = '<tg-emoji emoji-id="5805523262691611326">✅</tg-emoji>'
+EMOJI_CROSS = '<tg-emoji emoji-id="5785177332595561481">❌</tg-emoji>'
 EMOJI_WARN  = '<tg-emoji emoji-id="5420323339723881652">⚠️</tg-emoji>'
 EMOJI_SIREN = '<tg-emoji emoji-id="5395695537687123235">🚨</tg-emoji>'
-EMOJI_LOCK  = '<tg-emoji emoji-id="6334379984760604198">🔒</tg-emoji>'
+EMOJI_LOCK  = '<tg-emoji emoji-id="5231154211000950256">🔒</tg-emoji>'
 EMOJI_BAN   = '<tg-emoji emoji-id="5280803324273115630">🚫</tg-emoji>'
 EMOJI_PLANE = '<tg-emoji emoji-id="5411563083908797492">🛫</tg-emoji>'
 EMOJI_BOX   = '<tg-emoji emoji-id="5298809897352193254">📦</tg-emoji>'
 EMOJI_KEY   = '<tg-emoji emoji-id="5193070340850327783">🔑</tg-emoji>'
-EMOJI_USER  = '<tg-emoji emoji-id="5249053508681883137">👤</tg-emoji>'
+EMOJI_USER  = '<tg-emoji emoji-id="5933540612694347912">👤</tg-emoji>'
 
 async def get_cached_setting(key: str, default: str = "") -> str:
     if key in SETTINGS_CACHE:
