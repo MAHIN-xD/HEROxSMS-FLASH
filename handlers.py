@@ -54,7 +54,7 @@ EMOJI_SIREN = '<tg-emoji emoji-id="5395695537687123235">🚨</tg-emoji>'
 EMOJI_LOCK  = '<tg-emoji emoji-id="5231154211000950256">🔒</tg-emoji>'
 EMOJI_BAN   = '<tg-emoji emoji-id="5280803324273115630">🚫</tg-emoji>'
 EMOJI_PLANE = '<tg-emoji emoji-id="5411563083908797492">🛫</tg-emoji>'
-EMOJI_BOX   = '<tg-emoji emoji-id="5298809897352193254">📦</tg-emoji>'
+EMOJI_BOX   = '<tg-emoji emoji-id="5974235702701853774">📦</tg-emoji>'
 EMOJI_KEY   = '<tg-emoji emoji-id="5193070340850327783">🔑</tg-emoji>'
 EMOJI_USER  = '<tg-emoji emoji-id="5933540612694347912">👤</tg-emoji>'
 
@@ -1192,7 +1192,7 @@ async def text_bulk_buy(message: Message, state: FSMContext):
     user, client = await get_valid_user_client(message.from_user.id)
     if not user or not client: 
         return await message.answer("Please send your HeroSMS API Key first.")
-    await message.answer(f"{EMOJI_BOX} <b>Bulk Purchase</b>\n\nHow many numbers do you want to buy? (1-50)", parse_mode=ParseMode.HTML)
+    await message.answer(f"{EMOJI_BOX} <b>Bulk Purchase</b>\n\nHow many numbers do you want to buy? (1-50) {EMOJI_BOX}", parse_mode=ParseMode.HTML)
     await state.set_state(BotStates.waiting_for_bulk_amount)
 
 @router.message(BotStates.waiting_for_bulk_amount)
