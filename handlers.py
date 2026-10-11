@@ -1192,7 +1192,7 @@ async def text_bulk_buy(message: Message, state: FSMContext):
     user, client = await get_valid_user_client(message.from_user.id)
     if not user or not client: 
         return await message.answer("Please send your HeroSMS API Key first.")
-    await message.answer(f"{EMOJI_BOX} <b>Bulk Purchase</b>\n\nHow many numbers do you want to buy? (1-50) {EMOJI_BOX}", parse_mode=ParseMode.HTML)
+    await message.answer(f"{EMOJI_BOX} <b>Bulk Purchase</b>\n\nHow many numbers do you want to buy? (1-50)", parse_mode=ParseMode.HTML)
     await state.set_state(BotStates.waiting_for_bulk_amount)
 
 @router.message(BotStates.waiting_for_bulk_amount)
