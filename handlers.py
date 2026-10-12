@@ -203,7 +203,7 @@ async def start_live_sniper_process(message: Message, target_op: str):
                 f"<tg-emoji emoji-id=\"6087154735125630953\">✅</tg-emoji> <b>SNIPER RESULT</b>\n\n"
                 f"<tg-emoji emoji-id=\"5411563083908797492\">🛫</tg-emoji> Operator: <b>{op_detected.upper()}</b>\n"
                 f"{EMOJI_FLAG} Telegram: <code>+{clean_phone}</code>\n"
-                f"{EMOJI_CARD} Rate: <b>{rate_str}</b>\n"
+                f"{EMOJI_CARD} {EMOJI_TICK} Rate: <b>{rate_str}</b>\n"
                 f"<tg-emoji emoji-id=\"5420323339723881652\">⚠️</tg-emoji> Status: <b>{tg_info['badge']}</b>\n\n"
                 f"{verdict_text}"
             )
@@ -222,7 +222,7 @@ async def start_live_sniper_process(message: Message, target_op: str):
                     f"{EMOJI_SIREN} <b>SNIPER ALERT (1/3)</b>\n\n"
                     f"<tg-emoji emoji-id=\"5411563083908797492\">🛫</tg-emoji> Operator: <b>{op_detected.upper()}</b>\n"
                     f"{EMOJI_FLAG} Number: <code>+{clean_phone}</code>\n"
-                    f"{EMOJI_CARD} Rate: <b>{rate_str}</b>\n"
+                    f"{EMOJI_CARD} {EMOJI_TICK} Rate: <b>{rate_str}</b>\n"
                     f"<tg-emoji emoji-id=\"5420323339723881652\">⚠️</tg-emoji> Status: <b>{tg_info['badge']}</b>",
                     parse_mode=ParseMode.HTML,
                     disable_notification=False
@@ -716,7 +716,7 @@ async def cb_tool_balance(callback: CallbackQuery):
     bal = await client.get_balance()
     if bal is not None:
         alert = f"\n\n{EMOJI_WARN} <b>Warning:</b> Balance is below $0.50! Please recharge soon." if bal < 0.50 else ""
-        text = f"{EMOJI_CARD} <b>Your Current Balance:</b> <code>{bal:.4f} USD</code>{alert}"
+        text = f"{EMOJI_CARD} {EMOJI_TICK} <b>Your Current Balance:</b> <code>{bal:.4f} USD</code>{alert}"
         await callback.message.edit_text(text, reply_markup=kb.back_button("tools_page_1"), parse_mode=ParseMode.HTML)
     else:
         await callback.answer("Error fetching balance.", show_alert=True)
@@ -769,7 +769,7 @@ async def cb_tool_cancel_api_change(callback: CallbackQuery, state: FSMContext):
 async def cb_tool_set_max_price(callback: CallbackQuery, state: FSMContext):
     cur_p = await get_dynamic_max_price()
     await callback.message.edit_text(
-        f"{EMOJI_CARD} <b>Current Max Price:</b> <code>${cur_p:.3f}</code>\n\n"
+        f"{EMOJI_CARD} {EMOJI_KEY} <b>Current Max Price:</b> <code>${cur_p:.3f}</code>\n\n"
         f"Please send the new max price (e.g. <code>0.18</code> or <code>0.20</code>):",
         reply_markup=kb.back_button("tools_page_1"),
         parse_mode=ParseMode.HTML
@@ -791,7 +791,7 @@ async def process_new_max_price(message: Message, state: FSMContext):
         await db.set_setting("max_price", str(new_val))
         set_cached_setting("max_price", str(new_val))
         await state.clear()
-        await message.answer(f"{EMOJI_TICK} Max Purchase Price updated to <b>${new_val:.3f}</b>!", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
+        await message.answer(f"{EMOJI_TICK} {EMOJI_CARD} Max Purchase Price updated to <b>${new_val:.3f}</b>!", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
     except Exception:
         await message.answer("Enter a valid decimal number (e.g. 0.18):")
 
@@ -807,7 +807,7 @@ async def cmd_quick_max_price(message: Message):
         new_val = float(args[1].strip())
         await db.set_setting("max_price", str(new_val))
         set_cached_setting("max_price", str(new_val))
-        await message.answer(f"{EMOJI_TICK} Max Purchase Price updated to <b>${new_val:.3f}</b>!", parse_mode=ParseMode.HTML)
+        await message.answer(f"{EMOJI_TICK} {EMOJI_CARD} Max Purchase Price updated to <b>${new_val:.3f}</b>!", parse_mode=ParseMode.HTML)
     except Exception:
         await message.answer("Invalid price format. Usage: <code>/max 0.18</code>", parse_mode=ParseMode.HTML)
 
@@ -1080,7 +1080,7 @@ async def process_add_user_id(message: Message, state: FSMContext):
     
     await db.set_approval_status(target, True)
     await state.clear()
-    await message.answer(f"{EMOJI_TICK} User <code>{target}</code> approved with full access!", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
+    await message.answer(f"{EMOJI_TICK} {EMOJI_USER} User <code>{target}</code> approved with full access!", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
     bot = get_bot_instance()
     if bot:
         try:
@@ -1101,7 +1101,7 @@ async def cmd_quick_add_user(message: Message):
         return await message.answer("Usage: <code>/add 123456789</code>", parse_mode=ParseMode.HTML)
     target = int(args[1])
     await db.set_approval_status(target, True)
-    await message.answer(f"{EMOJI_TICK} User <code>{target}</code> authorized!", parse_mode=ParseMode.HTML)
+    await message.answer(f"{EMOJI_TICK} {EMOJI_USER} User <code>{target}</code> authorized!", parse_mode=ParseMode.HTML)
     bot = get_bot_instance()
     if bot:
         try:
@@ -1130,7 +1130,7 @@ async def process_revoke_user_id(message: Message, state: FSMContext):
         return await message.answer("Enter a valid numeric User ID:")
     await db.set_approval_status(target, False)
     await state.clear()
-    await message.answer(f"{EMOJI_LOCK} Access revoked for user <code>{target}</code> silently.", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
+    await message.answer(f"{EMOJI_LOCK} {EMOJI_BAN} Access revoked for user <code>{target}</code> silently.", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
 
 @router.message(Command("d"))
 async def cmd_quick_revoke_user(message: Message):
@@ -1141,7 +1141,7 @@ async def cmd_quick_revoke_user(message: Message):
         return await message.answer("Usage: <code>/d 123456789</code>", parse_mode=ParseMode.HTML)
     target = int(args[1])
     await db.set_approval_status(target, False)
-    await message.answer(f"{EMOJI_LOCK} Access revoked for user <code>{target}</code> silently.", parse_mode=ParseMode.HTML)
+    await message.answer(f"{EMOJI_LOCK} {EMOJI_BAN} Access revoked for user <code>{target}</code> silently.", parse_mode=ParseMode.HTML)
 
 # --- Button: Finish (Replacement of /ok) ---
 @router.message(F.text == "Finish")
@@ -1192,7 +1192,7 @@ async def text_bulk_buy(message: Message, state: FSMContext):
     user, client = await get_valid_user_client(message.from_user.id)
     if not user or not client: 
         return await message.answer("Please send your HeroSMS API Key first.")
-    await message.answer(f"{EMOJI_BOX} <b>Bulk Purchase</b>\n\nHow many numbers do you want to buy? (1-50)", parse_mode=ParseMode.HTML)
+    await message.answer(f"{EMOJI_BOX} {EMOJI_CARD} <b>Bulk Purchase</b>\n\nHow many numbers do you want to buy? (1-50)", parse_mode=ParseMode.HTML)
     await state.set_state(BotStates.waiting_for_bulk_amount)
 
 @router.message(BotStates.waiting_for_bulk_amount)
@@ -1216,7 +1216,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
 
     init_bal = await client.get_balance()
     if init_bal is not None and init_bal < 0.50:
-        await message.answer(f"{EMOJI_WARN} <b>Low Balance Alert:</b> Current balance is <code>${init_bal:.4f} USD</code>. Purchase might fail.", parse_mode=ParseMode.HTML)
+        await message.answer(f"{EMOJI_WARN} {EMOJI_CARD} <b>Low Balance Alert:</b> Current balance is <code>${init_bal:.4f} USD</code>. Purchase might fail.", parse_mode=ParseMode.HTML)
 
     status_msg = await message.answer(f"Buying {amount} numbers... (0/{amount}) (0%)")
     
@@ -1402,7 +1402,7 @@ async def cb_show_fresh_numbers(callback: CallbackQuery):
 
     fresh_phones = batch_data["fresh_phones"]
     await callback.message.edit_text(
-        f"{EMOJI_TICK} <b>Fresh Numbers ({len(fresh_phones)})</b>\n<i>Tap any number to copy:</i>",
+        f"{EMOJI_TICK} {EMOJI_PLANE} <b>Fresh Numbers ({len(fresh_phones)})</b>\n<i>Tap any number to copy:</i>",
         reply_markup=kb.fresh_numbers_menu(fresh_phones, batch_id),
         parse_mode=ParseMode.HTML
     )
@@ -1561,7 +1561,7 @@ async def process_broadcast(message: Message, state: FSMContext):
 async def cb_admin_ban(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID: 
         return await callback.answer("Unauthorized", show_alert=True)
-    await callback.message.edit_text(f"{EMOJI_BAN} Send the User ID to ban/unban:", reply_markup=kb.back_button("tools_page_2"))
+    await callback.message.edit_text(f"{EMOJI_BAN} {EMOJI_USER} Send the User ID to ban/unban:", reply_markup=kb.back_button("tools_page_2"))
     await state.set_state(BotStates.waiting_for_ban_id)
 
 @router.message(BotStates.waiting_for_ban_id)
