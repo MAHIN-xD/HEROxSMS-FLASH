@@ -46,17 +46,17 @@ SETTINGS_CACHE = {}
 
 # --- Verified Custom Premium Emojis ---
 EMOJI_FLAG  = '<tg-emoji emoji-id="5294010206974397371">🇨🇴</tg-emoji>'
-EMOJI_CARD  = '<tg-emoji emoji-id="5888561507557447441">💳</tg-emoji>'
-EMOJI_TICK  = '<tg-emoji emoji-id="5805523262691611326">✅</tg-emoji>'
-EMOJI_CROSS = '<tg-emoji emoji-id="5785177332595561481">❌</tg-emoji>'
+EMOJI_CARD  = '<tg-emoji emoji-id="5206330150433595241">💳</tg-emoji>'
+EMOJI_TICK  = '<tg-emoji emoji-id="6087154735125630953">✅</tg-emoji>'
+EMOJI_CROSS = '<tg-emoji emoji-id="5321012601939838274">❌</tg-emoji>'
 EMOJI_WARN  = '<tg-emoji emoji-id="5420323339723881652">⚠️</tg-emoji>'
 EMOJI_SIREN = '<tg-emoji emoji-id="5395695537687123235">🚨</tg-emoji>'
-EMOJI_LOCK  = '<tg-emoji emoji-id="5231154211000950256">🔒</tg-emoji>'
+EMOJI_LOCK  = '<tg-emoji emoji-id="6334379984760604198">🔒</tg-emoji>'
 EMOJI_BAN   = '<tg-emoji emoji-id="5280803324273115630">🚫</tg-emoji>'
 EMOJI_PLANE = '<tg-emoji emoji-id="5411563083908797492">🛫</tg-emoji>'
-EMOJI_BOX   = '<tg-emoji emoji-id="5974235702701853774">📦</tg-emoji>'
+EMOJI_BOX   = '<tg-emoji emoji-id="5298809897352193254">📦</tg-emoji>'
 EMOJI_KEY   = '<tg-emoji emoji-id="5193070340850327783">🔑</tg-emoji>'
-EMOJI_USER  = '<tg-emoji emoji-id="5933540612694347912">👤</tg-emoji>'
+EMOJI_USER  = '<tg-emoji emoji-id="5249053508681883137">👤</tg-emoji>'
 
 async def get_cached_setting(key: str, default: str = "") -> str:
     if key in SETTINGS_CACHE:
@@ -115,8 +115,8 @@ async def start_live_sniper_process(message: Message, target_op: str):
     clean_op = target_op.strip().lower()
 
     status_msg = await message.answer(
-        f"🎯 <b>Sniper Active: {clean_op.upper()}</b> (Max: ${dynamic_max:.3f})\n"
-        f"🔍 Searching & attempting to grab... (Attempt #1)",
+        f"<tg-emoji emoji-id=\"5395695537687123235\">🚨</tg-emoji> <b>Sniper Active: {clean_op.upper()}</b> (Max: ${dynamic_max:.3f})\n"
+        f"<tg-emoji emoji-id=\"5420323339723881652\">⚠️</tg-emoji> Searching & attempting to grab... (Attempt #1)",
         parse_mode=ParseMode.HTML
     )
 
@@ -128,7 +128,7 @@ async def start_live_sniper_process(message: Message, target_op: str):
         is_active = (await get_cached_setting("sniper_active", "0")) == "1"
         if not is_active:
             try:
-                await status_msg.edit_text("🛑 <b>Sniper Stopped by User.</b>", parse_mode=ParseMode.HTML)
+                await status_msg.edit_text("<tg-emoji emoji-id=\"5280803324273115630\">🚫</tg-emoji> <b>Sniper Stopped by User.</b>", parse_mode=ParseMode.HTML)
             except Exception:
                 pass
             break
@@ -175,9 +175,9 @@ async def start_live_sniper_process(message: Message, target_op: str):
 
             try:
                 await status_msg.edit_text(
-                    f"🎯 <b>Number Grabbed!</b>\n"
+                    f"<tg-emoji emoji-id=\"5395695537687123235\">🚨</tg-emoji> <b>Number Grabbed!</b>\n"
                     f"{EMOJI_FLAG} <code>+{clean_phone}</code> ({op_detected.upper()})\n\n"
-                    f"🔍 Checking Telegram status, please wait...",
+                    f"<tg-emoji emoji-id=\"5420323339723881652\">⚠️</tg-emoji> Checking Telegram status, please wait...",
                     parse_mode=ParseMode.HTML
                 )
             except Exception:
@@ -195,16 +195,16 @@ async def start_live_sniper_process(message: Message, target_op: str):
             if tg_info["is_fresh"]:
                 verdict_text = f"{EMOJI_TICK} <b>FRESH NUMBER!</b> Waiting for OTP..."
             else:
-                verdict_text = f"🔻 <b>{tg_info['badge']}</b> (<i>Auto-cancelling for refund in 2 mins...</i>)"
+                verdict_text = f"<tg-emoji emoji-id=\"5321012601939838274\">❌</tg-emoji> <b>{tg_info['badge']}</b> (<i>Auto-cancelling for refund in 2 mins...</i>)"
                 bad_item = [{"aid": aid, "phone": clean_phone}]
                 asyncio.create_task(auto_cancel_bad_numbers(client, bad_item))
 
             final_text = (
-                f"🎉 <b>SNIPER RESULT</b>\n\n"
-                f"📡 Operator: <b>{op_detected.upper()}</b>\n"
+                f"<tg-emoji emoji-id=\"6087154735125630953\">✅</tg-emoji> <b>SNIPER RESULT</b>\n\n"
+                f"<tg-emoji emoji-id=\"5411563083908797492\">🛫</tg-emoji> Operator: <b>{op_detected.upper()}</b>\n"
                 f"{EMOJI_FLAG} Telegram: <code>+{clean_phone}</code>\n"
                 f"{EMOJI_CARD} Rate: <b>{rate_str}</b>\n"
-                f"🔍 Status: <b>{tg_info['badge']}</b>\n\n"
+                f"<tg-emoji emoji-id=\"5420323339723881652\">⚠️</tg-emoji> Status: <b>{tg_info['badge']}</b>\n\n"
                 f"{verdict_text}"
             )
 
@@ -220,17 +220,17 @@ async def start_live_sniper_process(message: Message, target_op: str):
             try:
                 await message.answer(
                     f"{EMOJI_SIREN} <b>SNIPER ALERT (1/3)</b>\n\n"
-                    f"📡 Operator: <b>{op_detected.upper()}</b>\n"
+                    f"<tg-emoji emoji-id=\"5411563083908797492\">🛫</tg-emoji> Operator: <b>{op_detected.upper()}</b>\n"
                     f"{EMOJI_FLAG} Number: <code>+{clean_phone}</code>\n"
                     f"{EMOJI_CARD} Rate: <b>{rate_str}</b>\n"
-                    f"🔍 Status: <b>{tg_info['badge']}</b>",
+                    f"<tg-emoji emoji-id=\"5420323339723881652\">⚠️</tg-emoji> Status: <b>{tg_info['badge']}</b>",
                     parse_mode=ParseMode.HTML,
                     disable_notification=False
                 )
                 await asyncio.sleep(0.3)
 
                 await message.answer(
-                    f"⚡ <b>TAP TO COPY (2/3):</b>\n\n<code>+{clean_phone}</code>",
+                    f"<tg-emoji emoji-id=\"5395695537687123235\">🚨</tg-emoji> <b>TAP TO COPY (2/3):</b>\n\n<code>+{clean_phone}</code>",
                     parse_mode=ParseMode.HTML,
                     disable_notification=False
                 )
@@ -254,8 +254,8 @@ async def start_live_sniper_process(message: Message, target_op: str):
         if now - last_ui_edit >= 2.0:
             try:
                 await status_msg.edit_text(
-                    f"🎯 <b>Sniper Active: {clean_op.upper()}</b> (Max: ${dynamic_max:.3f})\n"
-                    f"🔍 Searching & attempting to grab... (Attempt #{attempt})",
+                    f"<tg-emoji emoji-id=\"5395695537687123235\">🚨</tg-emoji> <b>Sniper Active: {clean_op.upper()}</b> (Max: ${dynamic_max:.3f})\n"
+                    f"<tg-emoji emoji-id=\"5420323339723881652\">⚠️</tg-emoji> Searching & attempting to grab... (Attempt #{attempt})",
                     parse_mode=ParseMode.HTML
                 )
                 last_ui_edit = now
@@ -515,13 +515,13 @@ async def cmd_start(message: Message, state: FSMContext):
         has_api_key = bool(user_dict.get("api_key"))
         if not has_api_key:
             await message.answer(
-                "👑 <b>Welcome Admin!</b>\n\nPlease send your HeroSMS API Key to get started:",
+                "<tg-emoji emoji-id=\"5249053508681883137\">👤</tg-emoji> <b>Welcome Admin!</b>\n\nPlease send your HeroSMS API Key to get started:",
                 reply_markup=ReplyKeyboardRemove(),
                 parse_mode=ParseMode.HTML
             )
             await state.set_state(BotStates.waiting_for_api_key)
         else:
-            await message.answer("👑 Welcome back Admin!", reply_markup=kb.main_reply_menu())
+            await message.answer("<tg-emoji emoji-id=\"5249053508681883137\">👤</tg-emoji> Welcome back Admin!", reply_markup=kb.main_reply_menu())
         return
 
     user = await db.get_user(uid)
@@ -564,7 +564,7 @@ async def cmd_direct_api(message: Message, state: FSMContext):
                 parse_mode=ParseMode.HTML
             )
         else:
-            return await message.answer(f"{EMOJI_CROSS} Invalid API Key. Please verify your key.")
+            return await message.answer(f"{EMOJI_CROSS} {EMOJI_WARN} Invalid API Key. Please verify your key.", parse_mode=ParseMode.HTML)
 
     await message.answer(
         f"{EMOJI_KEY} <b>Send New API Key:</b>\n\nNiche apnar new HeroSMS API Key paste kore pathan:",
@@ -594,7 +594,7 @@ async def process_api_key(message: Message, state: FSMContext):
                 parse_mode=ParseMode.HTML
             )
         else:
-            await message.answer(f"{EMOJI_CROSS} Invalid API Key. Please send a valid key (or send 't' to cancel):")
+            await message.answer(f"{EMOJI_CROSS} {EMOJI_WARN} Invalid API Key. Please send a valid key (or send 't' to cancel):", parse_mode=ParseMode.HTML)
 
 @router.callback_query(F.data == "menu_main")
 async def cb_menu_main(callback: CallbackQuery, state: FSMContext):
@@ -622,8 +622,8 @@ async def open_tools_menu(message: Message, state: FSMContext):
         sniper_op = await get_cached_setting("sniper_op", "claro")
         
         snapshot = (
-            f"🛠️ <b>Control Center & Tools (Page 1/2)</b>\n\n"
-            f"📊 <b>Quick Settings Snapshot:</b>\n"
+            f"<tg-emoji emoji-id=\"5193070340850327783\">🔑</tg-emoji> <b>Control Center & Tools (Page 1/2)</b>\n\n"
+            f"<tg-emoji emoji-id=\"5206330150433595241\">💳</tg-emoji> <b>Quick Settings Snapshot:</b>\n"
             f"• Max Price Limit: <code>${max_p:.3f}</code>\n"
             f"• Active Operator: <code>{op.upper()}</code>\n"
             f"• Auto Sniper: <code>{'ACTIVE (' + sniper_op.upper() + ')' if sniper_on else 'OFF'}</code>\n\n"
@@ -641,8 +641,8 @@ async def cb_tools_page_1(callback: CallbackQuery):
     sniper_op = await get_cached_setting("sniper_op", "claro")
     
     snapshot = (
-        f"🛠️ <b>Control Center & Tools (Page 1/2)</b>\n\n"
-        f"📊 <b>Quick Settings Snapshot:</b>\n"
+        f"<tg-emoji emoji-id=\"5193070340850327783\">🔑</tg-emoji> <b>Control Center & Tools (Page 1/2)</b>\n\n"
+        f"<tg-emoji emoji-id=\"5206330150433595241\">💳</tg-emoji> <b>Quick Settings Snapshot:</b>\n"
         f"• Max Price Limit: <code>${max_p:.3f}</code>\n"
         f"• Active Operator: <code>{op.upper()}</code>\n"
         f"• Auto Sniper: <code>{'ACTIVE (' + sniper_op.upper() + ')' if sniper_on else 'OFF'}</code>\n\n"
@@ -660,8 +660,8 @@ async def cb_tools_page_2(callback: CallbackQuery):
     maintenance = (await get_cached_setting("maintenance", "0")) == "1"
     
     snapshot = (
-        f"🛠️ <b>Control Center & Tools (Page 2/2)</b>\n\n"
-        f"⚙️ <b>Advanced & Administrative Controls:</b>\n"
+        f"<tg-emoji emoji-id=\"5193070340850327783\">🔑</tg-emoji> <b>Control Center & Tools (Page 2/2)</b>\n\n"
+        f"<tg-emoji emoji-id=\"5193070340850327783\">🔑</tg-emoji> <b>Advanced & Administrative Controls:</b>\n"
         f"• HeroSMS API Key Management\n"
         f"• Order Statistics & User Management\n"
         f"• System Maintenance & Broadcast\n\n"
@@ -680,12 +680,12 @@ async def cb_tool_toggle_sniper(callback: CallbackQuery, state: FSMContext):
     if current_status == "1":
         await db.set_setting("sniper_active", "0")
         set_cached_setting("sniper_active", "0")
-        await callback.answer("🛑 Auto Sniper Stopped!", show_alert=True)
+        await callback.answer("<tg-emoji emoji-id=\"5280803324273115630\">🚫</tg-emoji> Auto Sniper Stopped!", show_alert=True)
         return await cb_tools_page_1(callback)
     else:
         await callback.answer()
         await callback.message.edit_text(
-            "🎯 <b>Auto Sniper Direct Grabber</b>\n\n"
+            "<tg-emoji emoji-id=\"5395695537687123235\">🚨</tg-emoji> <b>Auto Sniper Direct Grabber</b>\n\n"
             "Kon operator-er number continuous try korte chan? Operator name likhun (e.g. <code>claro</code>, <code>tigo</code>, <code>movistar</code>):",
             reply_markup=kb.back_button("tools_page_1"),
             parse_mode=ParseMode.HTML
@@ -825,7 +825,7 @@ async def cb_tool_stats(callback: CallbackQuery):
 
     data = res.get("data", {})
     display_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    lines = [f"📊 <b>HeroSMS Stats ({display_date}):</b>\n"]
+    lines = [f"<tg-emoji emoji-id=\"5206330150433595241\">💳</tg-emoji> <b>HeroSMS Stats ({display_date}):</b>\n"]
     total_purchased = 0
     total_success = 0
 
@@ -884,7 +884,7 @@ async def cb_tool_active_numbers(callback: CallbackQuery):
 async def cb_tool_set_op(callback: CallbackQuery, state: FSMContext):
     cur = await get_preferred_operator_str()
     await callback.message.edit_text(
-        f"📡 <b>Current Operator:</b> <code>{cur.upper()}</code>\n\n"
+        f"<tg-emoji emoji-id=\"5411563083908797492\">🛫</tg-emoji> <b>Current Operator:</b> <code>{cur.upper()}</code>\n\n"
         f"Please send the operator name (e.g. <code>claro</code>, <code>tigo</code>, <code>movistar</code>, or <code>any</code>):",
         reply_markup=kb.back_button("tools_page_1"),
         parse_mode=ParseMode.HTML
@@ -913,8 +913,8 @@ async def cb_tool_op_list(callback: CallbackQuery):
         colombia_ops = res.get("countryOperators", {}).get(str(COLOMBIA_ID), [])
         op_str = ", ".join(colombia_ops) if colombia_ops else "None"
         text = (
-            f"📡 <b>Live Colombia Operators:</b>\n<code>{op_str}</code>\n\n"
-            f"⚙️ <b>Currently Active:</b> <code>{cur.upper()}</code>"
+            f"<tg-emoji emoji-id=\"5411563083908797492\">🛫</tg-emoji> <b>Live Colombia Operators:</b>\n<code>{op_str}</code>\n\n"
+            f"<tg-emoji emoji-id=\"5193070340850327783\">🔑</tg-emoji> <b>Currently Active:</b> <code>{cur.upper()}</code>"
         )
         await callback.message.edit_text(text, reply_markup=kb.back_button("tools_page_1"), parse_mode=ParseMode.HTML)
     else:
@@ -934,7 +934,7 @@ async def cb_tool_reset_op(callback: CallbackQuery):
 @router.callback_query(F.data == "tool_exclude")
 async def cb_tool_exclude(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "➕ <b>Exclude Prefix:</b>\n\nSend prefix to blacklist (e.g. <code>57350</code> or <code>57300,57301</code>):",
+        "<tg-emoji emoji-id=\"6087154735125630953\">✅</tg-emoji> <b>Exclude Prefix:</b>\n\nSend prefix to blacklist (e.g. <code>57350</code> or <code>57300,57301</code>):",
         reply_markup=kb.back_button("tools_page_1"),
         parse_mode=ParseMode.HTML
     )
@@ -961,7 +961,7 @@ async def process_exclude_input(message: Message, state: FSMContext):
 @router.callback_query(F.data == "tool_unexclude")
 async def cb_tool_unexclude(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "➖ <b>Unexclude Prefix:</b>\n\nSend prefix to remove from blacklist (e.g. <code>57350</code>):",
+        "<tg-emoji emoji-id=\"5321012601939838274\">❌</tg-emoji> <b>Unexclude Prefix:</b>\n\nSend prefix to remove from blacklist (e.g. <code>57350</code>):",
         reply_markup=kb.back_button("tools_page_1"),
         parse_mode=ParseMode.HTML
     )
@@ -990,7 +990,7 @@ async def cb_tool_exclude_list(callback: CallbackQuery):
     cur_str = await get_excluded_prefixes_str()
     prefixes = cur_str.split(",") if cur_str else []
     formatted = "\n".join(f"- <code>+{p}</code>" for p in prefixes) if prefixes else "Empty"
-    await callback.message.edit_text(f"📜 <b>Currently Blacklisted Prefixes:</b>\n\n{formatted}", reply_markup=kb.back_button("tools_page_1"), parse_mode=ParseMode.HTML)
+    await callback.message.edit_text(f"<tg-emoji emoji-id=\"5298809897352193254\">📦</tg-emoji> <b>Currently Blacklisted Prefixes:</b>\n\n{formatted}", reply_markup=kb.back_button("tools_page_1"), parse_mode=ParseMode.HTML)
 
 @router.callback_query(F.data == "tool_reset_exclude")
 async def cb_tool_reset_exclude(callback: CallbackQuery):
@@ -1007,7 +1007,7 @@ async def cb_tool_reset_exclude(callback: CallbackQuery):
 @router.callback_query(F.data == "tool_retry")
 async def cb_tool_retry(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text(
-        "🔁 <b>Retry Number:</b>\n\nSend the Number or Activation ID to resend SMS:",
+        "<tg-emoji emoji-id=\"5411563083908797492\">🛫</tg-emoji> <b>Retry Number:</b>\n\nSend the Number or Activation ID to resend SMS:",
         reply_markup=kb.back_button("tools_page_1"),
         parse_mode=ParseMode.HTML
     )
@@ -1025,10 +1025,10 @@ async def process_retry_input(message: Message, state: FSMContext):
     res = await client.set_status(target, 3)
     await state.clear()
     if isinstance(res, str) and ("ACCESS_RETRY" in res or "STATUS_WAIT" in res):
-        await message.answer(f"{EMOJI_TICK} Retry mode activated for <code>+{target}</code>!", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
+        await message.answer(f"{EMOJI_TICK} {EMOJI_PLANE} Retry mode activated for <code>+{target}</code>!", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
     else:
         err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
-        await message.answer(f"Failed to retry: {clean_error_text(err)}", reply_markup=kb.main_reply_menu())
+        await message.answer(f"{EMOJI_CROSS} {EMOJI_WARN} Failed to retry: {clean_error_text(err)}", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
 
 @router.callback_query(F.data == "tool_cancel_number")
 async def cb_tool_cancel_number(callback: CallbackQuery, state: FSMContext):
@@ -1052,10 +1052,10 @@ async def process_cancel_input(message: Message, state: FSMContext):
     await state.clear()
     if isinstance(res, str) and ("ACCESS_CANCEL" in res or "STATUS_CANCEL" in res):
         await db.delete_activation(target)
-        await message.answer(f"{EMOJI_TICK} Successfully cancelled <code>+{target}</code> and refunded.", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
+        await message.answer(f"{EMOJI_TICK} {EMOJI_CARD} Successfully cancelled <code>+{target}</code> and refunded.", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
     else:
         err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
-        await message.answer(f"Failed to cancel: {clean_error_text(err)}", reply_markup=kb.main_reply_menu())
+        await message.answer(f"{EMOJI_CROSS} {EMOJI_WARN} Failed to cancel: {clean_error_text(err)}", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
 
 # --- Stealth Access Controls (/add & /d) ---
 @router.callback_query(F.data == "tool_add_user")
@@ -1086,7 +1086,7 @@ async def process_add_user_id(message: Message, state: FSMContext):
         try:
             await bot.send_message(
                 target,
-                "🎉 <b>Your account has been authorized!</b>\n\nPlease send your HeroSMS API Key to get started:",
+                "<tg-emoji emoji-id=\"6087154735125630953\">✅</tg-emoji> <b>Your account has been authorized!</b>\n\nPlease send your HeroSMS API Key to get started:",
                 parse_mode=ParseMode.HTML
             )
         except Exception:
@@ -1105,7 +1105,7 @@ async def cmd_quick_add_user(message: Message):
     bot = get_bot_instance()
     if bot:
         try:
-            await bot.send_message(target, "🎉 <b>Your account has been authorized!</b>\nPlease send your HeroSMS API Key to start:", parse_mode=ParseMode.HTML)
+            await bot.send_message(target, "<tg-emoji emoji-id=\"6087154735125630953\">✅</tg-emoji> <b>Your account has been authorized!</b>\nPlease send your HeroSMS API Key to start:", parse_mode=ParseMode.HTML)
         except Exception:
             pass
 
@@ -1156,13 +1156,13 @@ async def btn_finish_activations(message: Message):
 
         res = await client.get_active_activations()
         if not (isinstance(res, dict) and res.get("status") == "success"):
-            return await message.answer(f"{EMOJI_CROSS} Failed to fetch active numbers.")
+            return await message.answer(f"{EMOJI_CROSS} {EMOJI_WARN} Failed to fetch active numbers.", parse_mode=ParseMode.HTML)
 
         activations = res.get("data", [])
         to_finish = [act for act in activations if bool(act.get("smsCode")) or str(act.get("activationStatus")) in ["4", "6"]]
 
         if not to_finish:
-            return await message.answer(f"{EMOJI_WARN} No completed activations found with SMS to finish.")
+            return await message.answer(f"{EMOJI_WARN} {EMOJI_LOCK} No completed activations found with SMS to finish.", parse_mode=ParseMode.HTML)
 
         finished_lines = []
         for act in to_finish:
@@ -1295,7 +1295,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
             await asyncio.sleep(0.3)
         else:
             err = res.get("title", str(res)) if isinstance(res, dict) else str(res)
-            await message.answer(f"Stopped at #{i+1}: {clean_error_text(err)}")
+            await message.answer(f"{EMOJI_CROSS} {EMOJI_WARN} Stopped at #{i+1}: {clean_error_text(err)}", parse_mode=ParseMode.HTML)
             break
 
     if purchased:
@@ -1306,7 +1306,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
                 await db.save_activation(aid, uid, p)
 
         try:
-            await status_msg.edit_text(f"{EMOJI_TICK} Purchased {len(purchased)} numbers! (100%)\n🔍 Checking Telegram registration status, please wait...")
+            await status_msg.edit_text(f"{EMOJI_TICK} Purchased {len(purchased)} numbers! (100%)\n<tg-emoji emoji-id=\"5420323339723881652\">⚠️</tg-emoji> Checking Telegram registration status, please wait...")
         except Exception:
             pass
 
@@ -1348,7 +1348,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         other_list.sort(key=lambda x: x["priority"])
 
         lines = [
-            f"🎉 <b>Bulk Order Completed!</b>",
+            f"<tg-emoji emoji-id=\"6087154735125630953\">✅</tg-emoji> <b>Bulk Order Completed!</b>",
             f"Total: {len(purchased)} numbers (tap any number to copy)\n"
         ]
 
@@ -1359,7 +1359,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
                 lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — {item['badge']}{rate_text}\n")
 
         if other_list:
-            lines.append(f"🔻 <b>Unavailable / Occupied ({len(other_list)}):</b>")
+            lines.append(f"<tg-emoji emoji-id=\"5321012601939838274\">❌</tg-emoji> <b>Unavailable / Occupied ({len(other_list)}):</b>")
             for idx, item in enumerate(other_list, 1):
                 lines.append(f"{idx}. <code>+{item['phone']}</code> ({item['operator']}) — <b>{item['badge']}</b>")
             lines.append("<i>(Auto-cancelling for refund in 2 mins...)</i>\n")
@@ -1388,7 +1388,7 @@ async def process_bulk_amount(message: Message, state: FSMContext):
         reply_markup = kb.bulk_result_menu(batch_id, len(fresh_list))
         await status_msg.edit_text(final, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
     else:
-        await status_msg.edit_text("Could not purchase any numbers.")
+        await status_msg.edit_text(f"{EMOJI_CROSS} {EMOJI_WARN} Could not purchase any numbers.", parse_mode=ParseMode.HTML)
 
 # --- Fresh Batch Callbacks ---
 @router.callback_query(F.data.startswith("show_fresh_"))
@@ -1554,7 +1554,7 @@ async def process_broadcast(message: Message, state: FSMContext):
             await asyncio.sleep(0.04)
         except Exception:
             pass
-    await message.answer(f"{EMOJI_TICK} Sent to {sent} active users.", reply_markup=kb.main_reply_menu())
+    await message.answer(f"{EMOJI_TICK} {EMOJI_PLANE} Sent to {sent} active users.", reply_markup=kb.main_reply_menu(), parse_mode=ParseMode.HTML)
     await state.clear()
 
 @router.callback_query(F.data == "admin_ban")
